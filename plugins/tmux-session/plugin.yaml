@@ -1,0 +1,20 @@
+name: tmux-session
+version: 0.1.0
+description: "Persistent interactive terminal sessions for the agent via a private tmux server (separate socket). State (cwd, env, venv, SSH, REPL) survives between tool calls and gateway restarts. execute_shell tracks real exit codes with a unique completion marker; send_text/send_keys drive interactive programs (REPL, ssh, psql)."
+kind: standalone
+platforms:
+  - linux
+  - macos
+provides_tools:
+  - tmux_list_sessions
+  - tmux_ensure_session
+  - tmux_list_panes
+  - tmux_create_window
+  - tmux_inspect
+  - tmux_send_text
+  - tmux_send_keys
+  - tmux_execute_shell
+  - tmux_wait
+  - tmux_resize
+  - tmux_close
+provides_hooks: []
