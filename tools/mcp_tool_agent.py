@@ -4,6 +4,7 @@ and re-injecting post-build tools."""
 
 import logging
 import json
+import os
 import threading
 from typing import Optional
 from tools.mcp_tool_common import _core
@@ -29,10 +30,129 @@ def agent_tool_names(agent) -> list:
     return [name for name in map(_def_name, _agent_tool_defs(agent)) if name]
 
 
+def _project_mcp_scope_disabled_toolsets(agent) -> list:
+    """Return ``mcp-*`` toolset names to hide for this agent's session.
+
+    Two-level scope resolution:
+
+    1. ``tools.mcp_scope.full`` in config.yaml — if ``true``, the full
+       catalog is active (no scoping). Explicit "load everything" switch.
+    2. Walk up from the session's authoritative CWD to the nearest
+       ``.hermes/mcp-scope.yaml`` (or ``.hermes/mcp.yaml``). Project files
+       shadow the global one (``~/.hermes/mcp-scope.yaml``) because they are
+       closer in the walk.
+
+    Returns an empty list (no-op, full catalog) when:
+      * ``tools.mcp_scope.full`` is true
+      * no scope file is found
+      * the scope file has ``enabled: false``
+      * any error occurs (fail-open: a broken scope file never hides tools)
+    """
+    # Explicit full-catalog switch (deliberate command, not a side effect).
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+        scope_cfg = cfg.get("tools", {}).get("mcp_scope", {})
+        if isinstance(scope_cfg, dict) and scope_cfg.get("full", False):
+            return []
+    except Exception:
+        pass  # fail-open
+
+    try:
+        from tools.file_tools_paths import _authoritative_workspace_root
+        task_id = getattr(agent, "_current_task_id", "default")
+        cwd = _authoritative_workspace_root(task_id)
+    except Exception:
+        cwd = None
+    # Fall back to the process CWD (the gateway's WorkingDirectory, e.g.
+    # ~/.hermes) so DM sessions with no recorded terminal cwd still resolve a
+    # walk-up root. A global scope file under ~ is then found via the parent
+    # walk, keeping the narrow catalog for non-project sessions.
+    if not cwd:
+        try:
+            cwd = os.getcwd()
+        except Exception:
+            cwd = None
+    if not cwd:
+        return []
+
+    # Walk up to the nearest .hermes/mcp-scope.yaml (or mcp.yaml).
+    scope_file: Optional[str] = None
+    cur = cwd
+    while True:
+        for name in ("mcp-scope.yaml", "mcp.yaml"):
+            cand = os.path.join(cur, ".hermes", name)
+            if os.path.isfile(cand):
+                scope_file = cand
+                break
+        if scope_file:
+            break
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    if not scope_file:
+        return []
+
+    # Cache check (same path + same mtime -> reuse the parsed in-scope set, which
+    # avoids re-reading the file). NOTE: `out` is ALWAYS re-derived below from the
+    # LIVE registry — a server that binds after the first computation (slow OAuth,
+    # /reload-mcp) is still hidden on a cache hit, so a new out-of-scope server is
+    # never silently exposed just because the scope file itself didn't change.
+    cache = getattr(agent, "_mcp_scope_cache", None)
+    try:
+        mtime = os.path.getmtime(scope_file)
+    except OSError:
+        return []
+    in_scope = None
+    if cache and cache.get("path") == scope_file and cache.get("mtime") == mtime:
+        in_scope = set(cache.get("in_scope", ()))
+    if in_scope is None:
+        # Parse the scope file (fail-open: a broken file leaves the catalog full,
+        # but logs WHY so "scoping isn't working" is diagnosable).
+        try:
+            from hermes_yaml import safe_load
+            with open(scope_file, encoding="utf-8") as fh:
+                data = safe_load(fh.read()) or {}
+        except Exception as exc:
+            logger.warning(
+                "project-mcp-scope: cannot parse %s (%s); leaving catalog unscoped",
+                scope_file, exc,
+            )
+            return []
+        if not isinstance(data, dict) or not data.get("enabled", True):
+            return []
+        servers = data.get("servers")
+        if not isinstance(servers, (list, tuple)) or not servers:
+            return []
+        in_scope = {str(s) for s in servers}
+        agent._mcp_scope_cache = {"path": scope_file, "mtime": mtime, "in_scope": sorted(in_scope)}
+
+    # Determine which registered MCP servers are out of scope (LIVE registry).
+    try:
+        from tools.mcp_tool_discovery import get_registered_mcp_server_names
+        all_servers = get_registered_mcp_server_names()
+    except Exception:
+        return []
+    out = [f"mcp-{s}" for s in sorted(all_servers) if s not in in_scope]
+
+    logger.info(
+        "project-mcp-scope: hiding %d out-of-scope MCP server(s); "
+        "in-scope=%d; scope_file=%s",
+        len(out), len(in_scope), scope_file,
+    )
+    return out
+
+
 def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
     """Explicit reloads pass freshly-resolved toolsets (so a server just ENABLED in config is
     picked up) and the agent's selection is updated to match; automatic paths pass nothing
-    and reuse the build-time selection."""
+    and reuse the build-time selection.
+
+    Project-scoped MCP narrowing is applied on BOTH paths: it is a per-project CWD
+    constraint, so an explicit reload (/reload-mcp, TUI) must not silently drop the
+    out-of-scope servers a project scope hides. Fail-open: a broken scope never blocks
+    the refresh."""
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
     if enabled_override is not None or disabled_override is not None:
@@ -40,6 +160,16 @@ def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
         if disabled_override is not None:
             from toolsets import session_disabled_toolsets
             disabled = session_disabled_toolsets(disabled_override, getattr(agent, "platform", None))
+    # Project-scoped MCP: hide out-of-scope servers for this session's CWD on every
+    # refresh path (reads .hermes/mcp-scope.yaml; fail-open).
+    try:
+        _scoped = _project_mcp_scope_disabled_toolsets(agent)
+    except Exception:
+        _scoped = []  # fail-open: a broken scope must never break the refresh
+    if _scoped:
+        disabled = list(disabled or []) + _scoped
+    if enabled_override is not None or disabled_override is not None:
+        # Persist the effective selection so the next auto-refresh starts from here.
         agent.enabled_toolsets, agent.disabled_toolsets = enabled, disabled
     return enabled, disabled
 
@@ -129,8 +259,19 @@ def refresh_agent_mcp_tools(
     if preserve_prefix:
         try:
             prefix_registered = {entry.name for entry in registry.get_all_entries()}
-        except Exception:
-            pass  # fail open to the plain rebuild
+            # Project-scoped MCP: the preserve-prefix merge carries forward any live
+            # name still in the registered set. An out-of-scope MCP tool is now excluded
+            # from new_defs (above, via disabled_toolsets) but would otherwise be
+            # re-added by the merge. Drop its tool names from the keep-set so the live
+            # snapshot respects the project scope. Fail-open / no-op when unscoped.
+            for ts in _project_mcp_scope_disabled_toolsets(agent):
+                try:
+                    prefix_registered.difference_update(
+                        registry.get_tool_names_for_toolset(ts))
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            prefix_registered = None  # fail open to the plain rebuild
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
         staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
