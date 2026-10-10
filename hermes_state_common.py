@@ -280,7 +280,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
         f"(SELECT started_at FROM sessions _act_s WHERE _act_s.id = {session_id_expr})")
 
 
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -613,6 +613,26 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+-- Fork/Join conversation branches (sessions.fork): one row per forked branch of a
+-- session. base_message_uid pins the parent transcript point the branch started from
+-- (lazy overlay — the parent's rows below the base are shared by reference, never
+-- copied). status lifecycle: active → joined | abandoned.
+CREATE TABLE IF NOT EXISTS session_branches (
+    branch_id TEXT PRIMARY KEY,
+    parent_session_id TEXT NOT NULL REFERENCES sessions(id),
+    child_session_id TEXT NOT NULL REFERENCES sessions(id),
+    base_message_uid TEXT,
+    created_at REAL NOT NULL,
+    created_by_turn TEXT,
+    join_strategy TEXT,
+    joined_at REAL,
+    status TEXT NOT NULL DEFAULT 'active'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_branches_child
+    ON session_branches(child_session_id);
+CREATE INDEX IF NOT EXISTS idx_session_branches_parent
+    ON session_branches(parent_session_id, status);
+
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 -- Partial index for the Insights assistant tool-call scan

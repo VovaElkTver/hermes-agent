@@ -1526,14 +1526,46 @@ class SessionMessagesMixin:
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
         per-request repair forever), preserving summary markers before repair so derivative context
         cannot merge with an original user turn; the stored transcript is never mutated."""
-        rows = self._fetch_conversation_rows(
-            self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
-            self._active_clause(include_inactive, include_compacted), with_session_id=False)
+        session_ids = self._resume_lineage_ids(session_id) if include_ancestors else [session_id]
+        # Fork overlay (sessions.fork): a branch child transcript = parent rows up to the branch
+        # base point + own rows. Only live for rows registered in session_branches; plain
+        # sessions keep the single-id fast path.
+        parent_overlay_id, base_uid = self._fork_overlay_parent(session_id)
+        if parent_overlay_id and base_uid:
+            pre_rows = self._fetch_conversation_rows([parent_overlay_id], self._active_clause(include_inactive, include_compacted), with_session_id=False)
+            kept = []
+            found = False
+            for r in pre_rows:
+                kept.append(r)
+                if r["message_uid"] == base_uid:
+                    found = True
+                    break
+            if not found:
+                # base lost (compaction/rewind): degrade to plain child transcript
+                rows = self._fetch_conversation_rows(session_ids, self._active_clause(include_inactive, include_compacted), with_session_id=False)
+            else:
+                own_rows = self._fetch_conversation_rows([session_id], self._active_clause(include_inactive, include_compacted), with_session_id=False)
+                rows = kept + own_rows
+        else:
+            rows = self._fetch_conversation_rows(
+                session_ids,
+                self._active_clause(include_inactive, include_compacted), with_session_id=False)
         if include_compacted:
             rows = self._dedupe_display_generations(rows)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
             repair_alternation=repair_alternation, include_row_ids=include_row_ids,
             include_summary_markers=repair_alternation)
+
+    def _fork_overlay_parent(self, session_id: str) -> tuple[str | None, str | None]:
+        """(parent_session_id, base_message_uid) when ``session_id`` is an active fork
+        branch, else (None, None). Joined/abandoned branches read as plain sessions."""
+        try:
+            branch = self.get_branch_for_child(session_id)
+        except Exception:
+            return None, None
+        if not branch or branch.get("status") != "active":
+            return None, None
+        return branch.get("parent_session_id"), branch.get("base_message_uid")
 
     def _dedupe_replayed_user(self, messages, msg, exact_user_clones) -> tuple[bool, Any]:
         """Ancestor-lineage dedupe of one decoded user *msg* -> ``(skip, exact_clone_key)``. Rotation
