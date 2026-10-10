@@ -1045,17 +1045,38 @@ class SessionMessagesMixin:
                      int(tail_count) + self._uncounted_merged_rows(compacted_messages[-int(tail_count):]))).fetchall()]
             rewind_ids += tail_ids
             rewind_ids = list(dict.fromkeys(rewind_ids))
+            # Fork-branch pinning (sessions.fork): rows at/below the lowest active branch base are
+            # archived like everything else but CLONED back as the head of the fresh set, so a fork
+            # child's overlay prefix (base_message_uid) survives parent compaction. Cheap no-op when
+            # the session has no active branches (subquery returns NULL via MIN()).
+            branch_floor = None
+            floor_row = conn.execute(
+                """SELECT MIN(m.id) FROM session_branches b
+                   JOIN messages m ON m.message_uid = b.base_message_uid
+                    AND m.session_id = b.parent_session_id
+                   WHERE b.parent_session_id = ? AND b.status = 'active'""",
+                (session_id,)).fetchone()
+            if floor_row and floor_row[0] is not None:
+                branch_floor = int(floor_row[0])
+            floor_clause = f" AND id > {int(branch_floor)}" if branch_floor is not None else ""
             if rewind_ids:
                 placeholders = _placeholders(rewind_ids)
                 conn.execute("UPDATE messages SET active = 0, compacted = 0 "
                     f"WHERE session_id = ? AND id IN ({placeholders})", [session_id, *rewind_ids])
-                conn.execute(f"{_ARCHIVE_ACTIVE_SQL} AND id NOT IN ({placeholders})", [session_id, *rewind_ids])
+                conn.execute(f"{_ARCHIVE_ACTIVE_SQL}{floor_clause} AND id NOT IN ({placeholders})", [session_id, *rewind_ids])
             else:
-                conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
+                conn.execute(f"{_ARCHIVE_ACTIVE_SQL}{floor_clause}", (session_id,))
             # Same identity carry as publish_compression_child (#59661): carried tail copies keep the
             # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
             # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
             self._carry_parent_timestamps(conn, session_id, compacted_messages)
+            if branch_floor is not None:
+                # Pinned fork-prefix clones FIRST (before the compacted set) so display order keeps
+                # them at conversation head; fresh ids keep FTS/concurrent-append invariants (#75316).
+                self._clone_message_rows(conn, [
+                    row["id"] for row in conn.execute(
+                        "SELECT id FROM messages WHERE session_id = ? AND active = 0 AND id <= ? ORDER BY id",
+                        (session_id, branch_floor)).fetchall()])
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
             if tail_ids:
                 self._clone_message_rows(conn, tail_ids)
@@ -1526,14 +1547,46 @@ class SessionMessagesMixin:
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
         per-request repair forever), preserving summary markers before repair so derivative context
         cannot merge with an original user turn; the stored transcript is never mutated."""
-        rows = self._fetch_conversation_rows(
-            self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
-            self._active_clause(include_inactive, include_compacted), with_session_id=False)
+        session_ids = self._resume_lineage_ids(session_id) if include_ancestors else [session_id]
+        # Fork overlay (sessions.fork): a branch child transcript = parent rows up to the branch
+        # base point + own rows. Only live for rows registered in session_branches; plain
+        # sessions keep the single-id fast path.
+        parent_overlay_id, base_uid = self._fork_overlay_parent(session_id)
+        if parent_overlay_id and base_uid:
+            pre_rows = self._fetch_conversation_rows([parent_overlay_id], self._active_clause(include_inactive, include_compacted), with_session_id=False)
+            kept = []
+            found = False
+            for r in pre_rows:
+                kept.append(r)
+                if r["message_uid"] == base_uid:
+                    found = True
+                    break
+            if not found:
+                # base lost (compaction/rewind): degrade to plain child transcript
+                rows = self._fetch_conversation_rows(session_ids, self._active_clause(include_inactive, include_compacted), with_session_id=False)
+            else:
+                own_rows = self._fetch_conversation_rows([session_id], self._active_clause(include_inactive, include_compacted), with_session_id=False)
+                rows = kept + own_rows
+        else:
+            rows = self._fetch_conversation_rows(
+                session_ids,
+                self._active_clause(include_inactive, include_compacted), with_session_id=False)
         if include_compacted:
             rows = self._dedupe_display_generations(rows)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
             repair_alternation=repair_alternation, include_row_ids=include_row_ids,
             include_summary_markers=repair_alternation)
+
+    def _fork_overlay_parent(self, session_id: str) -> tuple[str | None, str | None]:
+        """(parent_session_id, base_message_uid) when ``session_id`` is an active fork
+        branch, else (None, None). Joined/abandoned branches read as plain sessions."""
+        try:
+            branch = self.get_branch_for_child(session_id)
+        except Exception:
+            return None, None
+        if not branch or branch.get("status") != "active":
+            return None, None
+        return branch.get("parent_session_id"), branch.get("base_message_uid")
 
     def _dedupe_replayed_user(self, messages, msg, exact_user_clones) -> tuple[bool, Any]:
         """Ancestor-lineage dedupe of one decoded user *msg* -> ``(skip, exact_clone_key)``. Rotation

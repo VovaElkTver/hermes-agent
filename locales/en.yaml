@@ -132,6 +132,17 @@ gateway:
     branched_thread_one: "⑂ Branched to **{title}** in a new thread ({count} message copied)\nThread: {thread}\nOriginal: `{parent}` — this chat stays on it\nBranch: `{new}`\nUse `/branch --here` to branch in this chat instead."
     branched_thread_many: "⑂ Branched to **{title}** in a new thread ({count} messages copied)\nThread: {thread}\nOriginal: `{parent}` — this chat stays on it\nBranch: `{new}`\nUse `/branch --here` to branch in this chat instead."
     thread_fallback: "No thread could be created here, so the branch replaced this chat's session."
+  fork:
+    created: "⑂ Forked to **{title}** (lazy branch `{branch}`, shares history with `{parent}`)\nFork session: `{new}`\nUse `/join {branch}` to merge back, `/branch` for a full copy."
+    no_conversation: "Nothing to fork — the parent has no messages yet."
+    create_failed: "Failed to create fork: {error}"
+  join:
+    none_active: "No active forked branches on this session. Start one with /fork."
+    not_found: "No such active branch: {arg}. Run /join to list branches."
+    ambiguous: "Several active branches, name one: {branches}"
+    append_unavailable: "--append is only possible while the parent tail after the branch point is uncompressed; use the default work-note join for {branch}."
+    joined: "✓ Joined branch {branch} ({strategy})."
+    db_unavailable: "Session database not available."
   commands:
     usage: "Usage: `/commands [page]`"
     skill_header: "⚡ **Skill Commands**:"
