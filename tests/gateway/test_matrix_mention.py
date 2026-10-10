@@ -13,6 +13,31 @@ from gateway.config import PlatformConfig
 # module-level mock installation — tests that call adapter methods
 # needing real mautrix APIs mock them individually.
 
+# --- Hermeticity: Matrix tests must not read the operator's env -------------------
+# The adapter resolves every MATRIX_* key from the process env.  In a dev/gateway
+# shell those vars are set by ~/.hermes/.env (MATRIX_ALLOWED_ROOMS,
+# MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_THREAD_REQUIRE_MENTION, ...), and a stray
+# allowlist / require-mention flag silently drops test rooms BEFORE the
+# mention gate under test, so "fire" cases fail with await_count=0 for the
+# wrong reason.  Clear every operator MATRIX_* var that can alter the inbound
+# gate so each test starts from a known default.
+_INTERFERING_MATRIX_ENV = (
+    "MATRIX_ALLOW_ROOM_MENTIONS", "MATRIX_THREAD_REQUIRE_MENTION",
+    "MATRIX_REQUIRE_MENTION", "MATRIX_ALLOWED_ROOMS", "MATRIX_ALLOWED_USERS",
+    "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_REACT_TO_ROOM_MENTIONS",
+    "MATRIX_HOME_ROOM", "MATRIX_HOME_ROOM_THREAD_ID", "MATRIX_REACTIONS",
+    "MATRIX_LLM_DELAY_ROOMS", "MATRIX_LLM_DELAY_SECONDS", "MATRIX_IGNORE_USER_PATTERNS",
+    "MATRIX_DM_AUTO_THREAD", "MATRIX_DM_MENTION_THREADS", "MATRIX_SESSION_SCOPE",
+    "MATRIX_ALLOWED_ROOMS", "HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS",
+)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_matrix_env(monkeypatch):
+    """Isolate every test from the operator's Matrix env so gating is default."""
+    for key in _INTERFERING_MATRIX_ENV:
+        monkeypatch.delenv(key, raising=False)
+
 
 def _make_adapter(tmp_path=None):
     """Create a MatrixAdapter with mocked config."""
@@ -416,20 +441,23 @@ def test_yaml_bridge_respects_scope_and_existing_env(monkeypatch, existing, seco
 
 @pytest.mark.asyncio
 async def test_room_mention_dropped_by_default(monkeypatch):
-    """Default: an @room ping (m.mentions.room) is NOT a mention -> dropped under require_mention."""
+    """Default: a structured m.mentions.room flag WITHOUT a leading @room/@all token is a
+    machine transport artifact (a client attaches it when replying into an @room thread),
+    NOT an order. With the opt-in off the bot stays silent even when the flag is set."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
     monkeypatch.delenv("MATRIX_REACT_TO_ROOM_MENTIONS", raising=False)
     monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    event = _make_event("@room everyone ready?", room_mention=True)
+    # Structured room flag set, but the leading token is ordinary prose (a bot pong
+    # replying into an @room thread). No leading @room/@all -> not a command.
+    event = _make_event("pong, see the @room thread", room_mention=True)
 
     await adapter._on_room_message(event)
     adapter.handle_message.assert_not_awaited()
 
 
-@pytest.mark.xfail(reason="pre-existing fire-path regression in fork main (9 existing tests also fail)")
 @pytest.mark.asyncio
 async def test_room_mention_processed_when_opted_in(monkeypatch):
     """MATRIX_REACT_TO_ROOM_MENTIONS=true: an @room ping counts as a mention of the bot."""
@@ -477,7 +505,6 @@ async def test_room_flag_without_leading_literal_is_silent(monkeypatch):
     adapter.handle_message.assert_not_awaited()
 
 
-@pytest.mark.xfail(reason="pre-existing fire-path regression in fork main (9 existing tests also fail)")
 @pytest.mark.asyncio
 async def test_leading_atroom_without_flag_fires(monkeypatch):
     """v2: a leading @room is a human operator's command even when no structured
@@ -494,7 +521,6 @@ async def test_leading_atroom_without_flag_fires(monkeypatch):
     adapter.handle_message.assert_awaited_once()
 
 
-@pytest.mark.xfail(reason="pre-existing fire-path regression in fork main (9 existing tests also fail)")
 @pytest.mark.asyncio
 async def test_leading_atall_without_flag_fires(monkeypatch):
     """v2: a leading @all is treated identically to a leading @room."""
