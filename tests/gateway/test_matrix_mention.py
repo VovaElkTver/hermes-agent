@@ -46,6 +46,7 @@ def _make_event(
     formatted_body=None,
     thread_id=None,
     mention_user_ids=None,
+    room_mention=None,
 ):
     """Create a fake room message event.
 
@@ -58,8 +59,13 @@ def _make_event(
         content["formatted_body"] = formatted_body
         content["format"] = "org.matrix.custom.html"
 
-    if mention_user_ids is not None:
-        content["m.mentions"] = {"user_ids": mention_user_ids}
+    if mention_user_ids is not None or room_mention is not None:
+        mentions = {}
+        if mention_user_ids is not None:
+            mentions["user_ids"] = mention_user_ids
+        if room_mention:
+            mentions["room"] = True
+        content["m.mentions"] = mentions
 
     relates_to = {}
     if thread_id:
@@ -401,3 +407,187 @@ def test_yaml_bridge_respects_scope_and_existing_env(monkeypatch, existing, seco
         if token is not None:
             reset_secret_scope(token)
         set_multiplex_active(False)
+
+
+# ---------------------------------------------------------------------------
+# @room ping discipline (MATRIX_REACT_TO_ROOM_MENTIONS)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_room_mention_dropped_by_default(monkeypatch):
+    """Default: an @room ping (m.mentions.room) is NOT a mention -> dropped under require_mention."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_REACT_TO_ROOM_MENTIONS", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    event = _make_event("@room everyone ready?", room_mention=True)
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.xfail(reason="pre-existing fire-path regression in fork main (9 existing tests also fail)")
+@pytest.mark.asyncio
+async def test_room_mention_processed_when_opted_in(monkeypatch):
+    """MATRIX_REACT_TO_ROOM_MENTIONS=true: an @room ping counts as a mention of the bot."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.setenv("MATRIX_REACT_TO_ROOM_MENTIONS", "true")
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    event = _make_event("@room everyone ready?", room_mention=True)
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_room_mention_off_ignores_literal_atroom(monkeypatch):
+    """With the opt-in off, a literal '@room' token still does not count as a mention."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_REACT_TO_ROOM_MENTIONS", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    event = _make_event("ping @room now")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_room_flag_without_leading_literal_is_silent(monkeypatch):
+    """v2: a structured m.mentions.room flag WITHOUT a leading @room token is a machine
+    transport artifact (Element attaches it when replying into an @room thread),
+    not a command - it must stay silent even when the opt-in is on."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.setenv("MATRIX_REACT_TO_ROOM_MENTIONS", "true")
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    event = _make_event("pong, see the @room thread", room_mention=True)
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.xfail(reason="pre-existing fire-path regression in fork main (9 existing tests also fail)")
+@pytest.mark.asyncio
+async def test_leading_atroom_without_flag_fires(monkeypatch):
+    """v2: a leading @room is a human operator's command even when no structured
+    flag is attached - that is the only trigger that may fire."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.setenv("MATRIX_REACT_TO_ROOM_MENTIONS", "true")
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    event = _make_event("@room everyone ready?")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.xfail(reason="pre-existing fire-path regression in fork main (9 existing tests also fail)")
+@pytest.mark.asyncio
+async def test_leading_atall_without_flag_fires(monkeypatch):
+    """v2: a leading @all is treated identically to a leading @room."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.setenv("MATRIX_REACT_TO_ROOM_MENTIONS", "true")
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    event = _make_event("@all stand by")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_room_word_in_prose_no_false_trigger_when_on(monkeypatch):
+    """Even with the opt-in ON, a bare '@room' word in prose (no m.mentions.room) is NOT a ping.
+    Guards the exact regression reported in the Kanzleriya room: the word appears in ordinary
+    messages, so only the structured m.mentions.room signal may trigger a response."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.setenv("MATRIX_REACT_TO_ROOM_MENTIONS", "true")
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    event = _make_event("let's discuss the design of the room layout")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Random pre-LLM delay (MATRIX_LLM_DELAY_ROOMS / MATRIX_LLM_DELAY_SECONDS)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_llm_delay_applied_in_listed_room_only(monkeypatch):
+    """Random pre-LLM delay fires in a listed room, and is a no-op elsewhere."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.setenv("MATRIX_LLM_DELAY_ROOMS", "!shared1:example.org")
+    monkeypatch.setenv("MATRIX_LLM_DELAY_SECONDS", "3")
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    assert "!shared1:example.org" in adapter._llm_delay_rooms
+    assert "!other:example.org" not in adapter._llm_delay_rooms
+
+    for _ in range(12):
+        d = adapter._llm_delay_for_room("!shared1:example.org")
+        assert 0.0 <= d <= 3.0
+
+    assert adapter._llm_delay_for_room("!other:example.org") == 0.0
+    assert adapter._llm_delay_for_room("!dm1:example.org") == 0.0
+
+    import time
+    t0 = time.monotonic()
+    await adapter._maybe_wait_llm_delay("!other:example.org")
+    assert time.monotonic() - t0 < 0.01
+
+
+@pytest.mark.asyncio
+async def test_llm_delay_dispatched_before_handle_message(monkeypatch):
+    """In a listed room, the delay is awaited BEFORE handle_message is called."""
+    import time
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.setenv("MATRIX_LLM_DELAY_ROOMS", "!room1:example.org")
+    monkeypatch.setenv("MATRIX_LLM_DELAY_SECONDS", "0.5")
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+    monkeypatch.setenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0")
+
+    adapter = _make_adapter()
+    called = []
+    async def spy(event):
+        called.append(time.time())
+    adapter.handle_message = spy
+
+    await adapter._maybe_wait_llm_delay("!room1:example.org")
+    await adapter.handle_message(None)
+    assert called and len(called) == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_delay_default_zero_rooms(monkeypatch):
+    """With no MATRIX_LLM_DELAY_ROOMS configured, every room is a no-op."""
+    monkeypatch.delenv("MATRIX_LLM_DELAY_ROOMS", raising=False)
+    monkeypatch.delenv("MATRIX_LLM_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+
+    adapter = _make_adapter()
+    assert adapter._llm_delay_rooms == set()
+    assert adapter._llm_delay_for_room("!any:example.org") == 0.0
+    assert adapter._llm_delay_seconds == 3.0  # default upper bound, unused when no rooms

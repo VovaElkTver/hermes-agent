@@ -3092,6 +3092,19 @@ OPTIONAL_ENV_VARS = {
     "MATRIX_FREE_RESPONSE_ROOMS": _msg(
         "Comma-separated Matrix room IDs where bot responds without @mention",
         "Free-response room IDs (comma-separated)", None, advanced=True),
+    "MATRIX_REACT_TO_ROOM_MENTIONS": _msg(
+        "When true, an inbound @room ping (m.mentions.room) counts as a mention of this bot, "
+        "so it answers whole-room pings even without a direct @bot. Default: false — a shared "
+        "multi-bot room would otherwise loop on every @room ping; enable only on the profiles "
+        "that must answer the ping.", "React to @room pings (true/false)", None, advanced=True),
+    "MATRIX_LLM_DELAY_ROOMS": _msg(
+        "Comma-separated Matrix room IDs where the bot sleeps a random 0..MATRIX_LLM_DELAY_SECONDS "
+        "before sending each inbound message to the LLM. Spreads out responses in shared multi-bot "
+        "rooms (e.g. All-Hermes-bots rooms) where a @room ping wakes every bot at the same second. "
+        "Default: empty — no delay anywhere.", "Random-delay room IDs (comma-separated)", None, advanced=True),
+    "MATRIX_LLM_DELAY_SECONDS": _msg(
+        "Upper bound (seconds) of the random pre-LLM delay applied in MATRIX_LLM_DELAY_ROOMS. "
+        "Default: 3.", "Max random delay seconds (default 3)", None, advanced=True),
     "MATRIX_AUTO_THREAD": _msg("Auto-create threads for messages in Matrix rooms (default: true)",
         "Auto-create threads in rooms (true/false)", None, advanced=True),
     "MATRIX_DM_AUTO_THREAD": _msg("Auto-create threads for DM messages in Matrix (default: false)",
