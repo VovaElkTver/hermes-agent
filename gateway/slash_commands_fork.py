@@ -82,8 +82,8 @@ class GatewayForkCommandsMixin:
             logger.error("Failed to create fork session: %s", e)
             return t("gateway.fork.create_failed", error=e)
 
-        branch_id = self._session_db.new_branch_id()
-        self._session_db.create_branch_row(
+        branch_id = await self._session_db.new_branch_id()
+        await self._session_db.create_branch_row(
             branch_id, parent_session_id, new_session_id, last_uid)
         with contextlib.suppress(Exception):
             await self._session_db.set_session_title(new_session_id, fork_title)
@@ -111,7 +111,7 @@ class GatewayForkCommandsMixin:
         here_entry = await self.async_session_store.get_or_create_session(event.source)
         session_id = here_entry.session_id
 
-        branches = self._session_db.list_active_branches(session_id)
+        branches = await self._session_db.list_active_branches(session_id)
         if not branches:
             return t("gateway.join.none_active")
         target = None
@@ -146,7 +146,7 @@ class GatewayForkCommandsMixin:
             await self._session_db.append_messages_batch(parent_session_id, [
                 dict(role="user", content=note)])
         # discard falls through: just close the branch
-        self._session_db.set_branch_status(branch["branch_id"], "joined", join_strategy=strategy)
+        await self._session_db.set_branch_status(branch["branch_id"], "joined", join_strategy=strategy)
         child_key = await self._session_db.get_session_key(child_id)
         if child_key:
             self._evict_cached_agent(child_key)
