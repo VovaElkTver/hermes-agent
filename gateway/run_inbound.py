@@ -1593,12 +1593,18 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     @staticmethod
     def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
         """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
-        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
+        _quoted = getattr(event, "reply_to_text", None)
+        if _quoted and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
             # it's disambiguation (*which* prior message), not deduplication.
             # Adapters resolve the original message (or the user's native partial quote).
-            # A preview here silently loses later list items and code; keep that context intact.
-            reply_text = event.reply_to_text
+            # Matrix reply-context budget (RECEPT-reply-context-v2 C5): the fetched original is
+            # capped at 2000 by the adapter helper and previewed at 500 here. Scoped to Matrix —
+            # Telegram/other platforms have a written contract that long quotes reach the prompt
+            # whole (test_reply_to_injection: later list items + @file refs must survive).
+            if source is not None and getattr(source, "platform", None) == Platform.MATRIX:
+                _quoted = _quoted[:500]
+            reply_text = _quoted
             _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
             message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
 

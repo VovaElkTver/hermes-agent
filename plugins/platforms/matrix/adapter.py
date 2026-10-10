@@ -167,6 +167,12 @@ def _normalize_matrix_bang_command(text: str) -> str:
     return f"/{resolved}{match.group(2) or ''}"
 
 
+_REPLY_MEDIA_MSGTYPES = frozenset({"m.image", "m.audio", "m.video", "m.file", "m.sticker"})
+_REPLY_MEDIA_JUNK_RE = re.compile(
+    r"^[\w .\-()]{0,80}\.(jpe?g|png|gif|webp|pdf|mp4|mov|webm|ogg|opus|mp3|txt|docx?)$",
+    re.IGNORECASE)
+
+
 # Reply fallback prefix: "> <@alice:example.org> quoted\n> more\n\nactual reply".
 _MATRIX_REPLY_FALLBACK_PILL_RE = re.compile(r"^>\s*<(@[^>]+)>\s*(.*)$")
 
@@ -2129,21 +2135,78 @@ class MatrixAdapter(BasePlatformAdapter):
         self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, source
 
+    async def _fetch_reply_origin(
+        self, room_id: str, event_id: str
+    ) -> tuple[Optional[str], Optional[str], Optional[str], bool]:
+        """GET the replied-to original when the client sent no inline quote (Element X replies).
+        Single source for the client is ``self._client``; no cache — one GET per reply.
+        Any failure (timeout, M_FORBIDDEN pre-join, missing crypto/keys, empty text) yields
+        ``(None, None, None, False)`` = "no context", never raises (contract C2).
+        Returns (text<=2000, author_id, display_name, is_own)."""
+        try:
+            if self._client is None:
+                return None, None, None, False
+            evt = await asyncio.wait_for(
+                self._client.get_event(RoomID(room_id), EventID(event_id)), timeout=3.0)
+            if evt is None:
+                return None, None, None, False
+            if str(getattr(evt, "type", "") or "") == "m.room.encrypted":  # EventType.ROOM_ENCRYPTED
+                # C3: the original in an E2EE room arrives encrypted — decrypt with OUR OlmMachine
+                # (keys from the live sync). No crypto or missing keys => C2 silence.
+                crypto = getattr(self._client, "crypto", None)
+                if crypto is None or not hasattr(crypto, "decrypt_megolm_event"):
+                    return None, None, None, False
+                evt = await asyncio.wait_for(crypto.decrypt_megolm_event(evt), timeout=3.0)
+            content = getattr(evt, "content", None)
+            msgtype = str(getattr(content, "msgtype", "") or "")
+            raw_body = str(getattr(content, "body", "") or "").strip()
+            if msgtype in _REPLY_MEDIA_MSGTYPES:
+                # C4: media never pretends to be text; a filename-shaped body is not a caption.
+                text = f"[{msgtype}]"
+                if raw_body and not _REPLY_MEDIA_JUNK_RE.match(raw_body):
+                    text = f"[{msgtype}] {raw_body}"
+            else:
+                text = raw_body
+            text = text[:2000]  # C5 helper slice; the 500 slice belongs to the prompt renderer
+            if not text:
+                return None, None, None, False
+            author = getattr(evt, "sender", None)
+            is_own = bool(author and self._user_id and author == self._user_id)  # C6
+            display_name = None
+            if author:
+                with suppress(Exception):
+                    display_name = await self._get_display_name(room_id, author)
+            logger.info("[Matrix] reply-context fetched %s in %s (%d chars, own=%s)",
+                        event_id, room_id, len(text), is_own)
+            return text, author, display_name, is_own
+        except Exception:
+            # C2 keeps behavior silent; INFO keeps the prod branch observable
+            # (pro runs at INFO — a debug-only log hides GET vs inline forever).
+            logger.info("[Matrix] reply-context fetch FAILED for %s in %s", event_id, room_id)
+            return None, None, None, False
+
     async def _extract_reply_context(
         self, room_id: str, body: str, relates_to: dict
-    ) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
-        """Return (body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name). Captures
-        the inline reply fallback (``> <@user:srv> text\\n\\nreply``) BEFORE stripping it, so the
-        prompt layer can render "[Replying to: ...]" like Signal/Slack/Telegram."""
+    ) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[str], bool]:
+        """Return (body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name, is_own).
+        Captures the inline reply fallback (``> <@user:srv> text\\n\\nreply``) BEFORE stripping it, so
+        the prompt layer can render "[Replying to: ...]" like Signal/Slack/Telegram. When the
+        relation exists but the client inlined no quote (Element X), fetch the original by
+        event_id instead; on any failure behave exactly as the old inline-only path (C2)."""
         reply_to = (relates_to.get("m.in_reply_to") or {}).get("event_id")
         reply_to_text = reply_to_author_id = reply_to_author_name = None
+        is_own = False
         if reply_to and body.startswith("> "):
             reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
             body = _strip_reply_fallback(body)
             # Resolve the replied-to author's display name (falls back to localpart).
             if reply_to_author_id:
                 reply_to_author_name = await self._get_display_name(room_id, reply_to_author_id)
-        return body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name
+                is_own = reply_to_author_id == self._user_id
+        elif reply_to:
+            reply_to_text, reply_to_author_id, reply_to_author_name, is_own = (
+                await self._fetch_reply_origin(room_id, reply_to))
+        return body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name, is_own
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
@@ -2157,7 +2220,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if ctx is None:
             return None
         body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
-        body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name = (
+        body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name, reply_to_is_own = (
             await self._extract_reply_context(room_id, body, relates_to))
         media_msgtype = extra.pop("media_msgtype", None)
         if media_msgtype is None:
@@ -2169,7 +2232,7 @@ class MatrixAdapter(BasePlatformAdapter):
         return MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
-            reply_to_author_name=reply_to_author_name,
+            reply_to_author_name=reply_to_author_name, reply_to_is_own_message=reply_to_is_own,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
 
@@ -2937,9 +3000,19 @@ class MatrixAdapter(BasePlatformAdapter):
         return protected, placeholders
 
     def _is_bot_mentioned(
-        self, body: str, formatted_body: Optional[str] = None, mention_user_ids: Optional[list] = None) -> bool:
+        self, body: str, formatted_body: Optional[str] = None, mention_user_ids: Optional[list] = None,
+        mention_room: bool = False) -> bool:
         """True if the bot is mentioned; ``m.mentions.user_ids`` (MSC3952) is authoritative
-        even when the body has no ``@bot`` text (pills may live only in formatted_body)."""
+        even when the body has no ``@bot`` text (pills may live only in formatted_body).
+        ``mention_room`` is the MSC3861 ``m.mentions.room`` broadcast flag. The text tokens
+        ``@room`` (native broadcast) and ``@all`` (local fleet alias) also address every bot,
+        but only as the FIRST token of the body — a ``@room`` anywhere else is prose/quote and
+        must never trigger; the flag alone is not a command (fleet directive 27.09, vovak)."""
+        broadcast_lead = bool(body and re.match(r"\s*@(?:room|all)\b", body, re.IGNORECASE))
+        if mention_room:
+            return broadcast_lead
+        if broadcast_lead:
+            return True
         if mention_user_ids and self._user_id and self._user_id in mention_user_ids:
             return True
         if not body and not formatted_body:
@@ -2968,7 +3041,8 @@ class MatrixAdapter(BasePlatformAdapter):
         """``_is_bot_mentioned`` fed from an event's content (MSC3952 ``m.mentions`` is authoritative)."""
         mentions = content.get("m.mentions") or {}
         return self._is_bot_mentioned(
-            body, content.get("formatted_body"), mentions.get("user_ids") if isinstance(mentions, dict) else None)
+            body, content.get("formatted_body"), mentions.get("user_ids") if isinstance(mentions, dict) else None,
+            bool(isinstance(mentions, dict) and mentions.get("room")))  # MSC3861 broadcast flag
 
     def _user_localpart(self) -> str:
         """``@bot:server`` -> ``bot``; empty when the user ID has no server part."""
