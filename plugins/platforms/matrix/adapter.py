@@ -33,6 +33,7 @@ from contextlib import suppress
 import logging
 import mimetypes
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -871,6 +872,18 @@ class MatrixAdapter(BasePlatformAdapter):
         # multiplexed secondary scope, where os.environ holds the DEFAULT profile's flags.
         self._auto_thread: bool = self._extra_truthy(config, "auto_thread", "MATRIX_AUTO_THREAD", "true")
         self._dm_auto_thread: bool = _env_truthy("MATRIX_DM_AUTO_THREAD", "false")
+        # Opt-in: treat an inbound m.mentions.room (an @room ping) as a mention of this bot, so
+        # it answers whole-room pings even without a direct @bot. Default off - a shared
+        # multi-bot room would otherwise loop on every @room ping; enable only on the profiles
+        # that must answer the ping.
+        self._react_to_room_mentions: bool = _env_truthy("MATRIX_REACT_TO_ROOM_MENTIONS", "false")
+        # Opt-in random pre-LLM delay, scoped to specific room IDs: in shared multi-bot rooms a
+        # room-wide ping (@room) wakes every bot at once; a 0..N second jitter before each bot
+        # calls the LLM spreads the responses so they don't pile up at the same second.
+        self._llm_delay_rooms: set[str] = _extra_csv_set(
+            config, "llm_delay_rooms", "MATRIX_LLM_DELAY_ROOMS")
+        self._llm_delay_seconds: float = _env_number(
+            "MATRIX_LLM_DELAY_SECONDS", 3.0, lambda s: float(s) if s.strip() else 3.0)
         self._dm_mention_threads: bool = self._extra_truthy(config, "dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "false")
         raw_session_scope = str(_extra_or_secret(config.extra, "session_scope", "MATRIX_SESSION_SCOPE", "auto")).strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
@@ -2079,6 +2092,13 @@ class MatrixAdapter(BasePlatformAdapter):
         chat_type = "dm" if is_dm else "group"
         thread_id = _thread_root(relates_to)
         is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
+        if not is_mentioned and self._react_to_room_mentions:
+            # An @room ping is a command only when a human operator leads the message with
+            # @room/@all; the structured m.mentions.room flag is a transport artifact and is
+            # deliberately ignored here (see _is_bot_room_mentioned). Gated opt-in, so a shared
+            # multi-bot room stays silent unless the profile enabled MATRIX_REACT_TO_ROOM_MENTIONS.
+            is_mentioned = self._is_bot_room_mentioned(
+                body, source_content.get("formatted_body"), source_content.get("m.mentions") or {})
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
             if self._allowed_rooms and room_id not in self._allowed_rooms:
@@ -2263,6 +2283,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(msg_event)
         else:
+            await self._maybe_wait_llm_delay(room_id)
             await self.handle_message(msg_event)
 
     async def _handle_media_message(
@@ -2324,6 +2345,7 @@ class MatrixAdapter(BasePlatformAdapter):
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
         if msg_event is not None:
+            await self._maybe_wait_llm_delay(room_id)
             await self.handle_message(msg_event)
 
     @staticmethod
@@ -3036,6 +3058,33 @@ class MatrixAdapter(BasePlatformAdapter):
         if thread_id and thread_id in self._threads:
             return False
         return not body.startswith("/") and not self._content_mentions_bot(body, content)
+
+    def _llm_delay_for_room(self, room_id: str) -> float:
+        """Random pre-LLM delay for *room_id* (0.0 when not in MATRIX_LLM_DELAY_ROOMS)."""
+        if room_id not in self._llm_delay_rooms:
+            return 0.0
+        return random.uniform(0.0, self._llm_delay_seconds)
+
+    async def _maybe_wait_llm_delay(self, room_id: str) -> None:
+        """Sleep a random 0..N seconds (N = MATRIX_LLM_DELAY_SECONDS) before an LLM call, but only
+        for rooms listed in MATRIX_LLM_DELAY_ROOMS - shared-room pings that wake several bots at
+        once get spread out. No-op elsewhere, so single-bot and DM rooms see zero added latency."""
+        delay = self._llm_delay_for_room(room_id)
+        if delay > 0:
+            logger.debug("Matrix: %s s random pre-LLM delay in %s", f"{delay:.2f}", room_id)
+            await asyncio.sleep(delay)
+
+    def _is_bot_room_mentioned(
+        self, body: str, formatted_body: Optional[str], mentions_block: dict) -> bool:
+        """v2 room-mention gate: a room ping is a command ONLY when a leading @room / @all is the
+        first token of the message (a human operator addressing the room). The structured
+        m.mentions.room flag is deliberately ignored - a client machine attaches it automatically
+        when it replies into an @room thread, which is a transport artifact, not an order. Only the
+        leading human @room counts. Gated by MATRIX_REACT_TO_ROOM_MENTIONS at the call site."""
+        if not body or not body.strip():
+            return False
+        first = body.lstrip().split(None, 1)[0]
+        return first.lower() in {"@room", "@all"}
 
     def _content_mentions_bot(self, body: str, content: dict) -> bool:
         """``_is_bot_mentioned`` fed from an event's content (MSC3952 ``m.mentions`` is authoritative)."""
