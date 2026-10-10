@@ -1045,17 +1045,38 @@ class SessionMessagesMixin:
                      int(tail_count) + self._uncounted_merged_rows(compacted_messages[-int(tail_count):]))).fetchall()]
             rewind_ids += tail_ids
             rewind_ids = list(dict.fromkeys(rewind_ids))
+            # Fork-branch pinning (sessions.fork): rows at/below the lowest active branch base are
+            # archived like everything else but CLONED back as the head of the fresh set, so a fork
+            # child's overlay prefix (base_message_uid) survives parent compaction. Cheap no-op when
+            # the session has no active branches (subquery returns NULL via MIN()).
+            branch_floor = None
+            floor_row = conn.execute(
+                """SELECT MIN(m.id) FROM session_branches b
+                   JOIN messages m ON m.message_uid = b.base_message_uid
+                    AND m.session_id = b.parent_session_id
+                   WHERE b.parent_session_id = ? AND b.status = 'active'""",
+                (session_id,)).fetchone()
+            if floor_row and floor_row[0] is not None:
+                branch_floor = int(floor_row[0])
+            floor_clause = f" AND id > {int(branch_floor)}" if branch_floor is not None else ""
             if rewind_ids:
                 placeholders = _placeholders(rewind_ids)
                 conn.execute("UPDATE messages SET active = 0, compacted = 0 "
                     f"WHERE session_id = ? AND id IN ({placeholders})", [session_id, *rewind_ids])
-                conn.execute(f"{_ARCHIVE_ACTIVE_SQL} AND id NOT IN ({placeholders})", [session_id, *rewind_ids])
+                conn.execute(f"{_ARCHIVE_ACTIVE_SQL}{floor_clause} AND id NOT IN ({placeholders})", [session_id, *rewind_ids])
             else:
-                conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
+                conn.execute(f"{_ARCHIVE_ACTIVE_SQL}{floor_clause}", (session_id,))
             # Same identity carry as publish_compression_child (#59661): carried tail copies keep the
             # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
             # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
             self._carry_parent_timestamps(conn, session_id, compacted_messages)
+            if branch_floor is not None:
+                # Pinned fork-prefix clones FIRST (before the compacted set) so display order keeps
+                # them at conversation head; fresh ids keep FTS/concurrent-append invariants (#75316).
+                self._clone_message_rows(conn, [
+                    row["id"] for row in conn.execute(
+                        "SELECT id FROM messages WHERE session_id = ? AND active = 0 AND id <= ? ORDER BY id",
+                        (session_id, branch_floor)).fetchall()])
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
             if tail_ids:
                 self._clone_message_rows(conn, tail_ids)

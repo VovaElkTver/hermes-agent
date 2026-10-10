@@ -348,6 +348,24 @@ class GatewayConfigLoadersMixin:
     def _effective_busy_mode(self, source: SessionSource, attr: str) -> str:
         """Busy mode from the routed profile snapshot (``attr``: ``_busy_input_mode`` / ``_busy_text_mode``)."""
         fallback = getattr(self, attr, "interrupt")
+        # Fork/join exclusive mode: while a session has active fork branches, its parent chat
+        # queues instead of steering/interrupting — a running parent turn must not interleave
+        # with branch-side turns sharing the same lineage context.
+        try:
+            session_id = None
+            store = getattr(self, "async_session_store", None)
+            peek = getattr(store, "peek_session_id", None)
+            if callable(peek):
+                session_id = peek(self._session_key_for_source(source))
+            if not session_id:
+                session_id = self._session_key_for_source(source) if hasattr(
+                    self, "_session_key_for_source") else None
+            db = getattr(self, "_session_db", None)
+            if session_id and db is not None and db.has_active_branches(session_id):
+                if attr == "_busy_input_mode" and fallback == "interrupt":
+                    return "queue"
+        except Exception:
+            pass
         profile_name = self._busy_profile_name_for_source(source)
         if not profile_name:
             return fallback

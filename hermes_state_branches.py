@@ -125,3 +125,84 @@ class SessionBranchMixin:
         if not row or row["floor_id"] is None:
             return None
         return int(row["floor_id"])
+
+    def get_last_message_uid(self, session_id: str) -> str | None:
+        """message_uid of the newest live row of ``session_id`` (fork base point)."""
+        try:
+            row = self._read_one(
+                """SELECT message_uid FROM messages
+                   WHERE session_id = ? AND active = 1 AND message_uid IS NOT NULL
+                   ORDER BY id DESC LIMIT 1""",
+                (session_id,))
+        except Exception:
+            return None
+        return row["message_uid"] if row else None
+
+    def get_session_key(self, session_id: str) -> str | None:
+        try:
+            row = self._read_one(
+                "SELECT session_key FROM sessions WHERE id = ?", (session_id,))
+        except Exception:
+            return None
+        return row["session_key"] if row else None
+
+    def _move_branch_rows_to_parent_sync(self, branch: dict) -> bool:
+        """Append strategy: reparent the branch's own rows onto the parent.
+
+        Allowed only while the parent tail after the fork point is uncompressed
+        (no summary markers / inactive rows between the base and now), so raw
+        rows keep their alternation context. Rows keep timestamps; ownership of
+        tool_call rows follows their parents.
+        """
+        parent_id = branch["parent_session_id"]
+        child_id = branch["child_session_id"]
+        base_uid = branch.get("base_message_uid")
+
+        def _do(conn):
+            cur = conn.execute("SELECT id FROM sessions WHERE id = ?", (parent_id,))
+            if cur.fetchone() is None:
+                return 0
+            floor = None
+            if base_uid:
+                row = conn.execute(
+                    "SELECT id FROM messages WHERE session_id = ? AND message_uid = ?",
+                    (parent_id, base_uid)).fetchone()
+                if row is None:
+                    return 0
+                floor = row[0]
+                # parent tail must be clean: no compacted/summary rows after the base
+                dirty = conn.execute(
+                    """SELECT COUNT(*) FROM messages
+                       WHERE session_id = ? AND id > ?
+                         AND (_compressed_summary IS NOT NULL OR active = 0 OR compacted = 1)""",
+                    (parent_id, floor)).fetchone()
+                if dirty and dirty[0]:
+                    return 0
+            # take the branch's own rows
+            rows = conn.execute(
+                """SELECT role, content, tool_call_id, tool_calls, tool_name,
+                          effect_disposition, timestamp, token_count, finish_reason,
+                          reasoning, reasoning_content, reasoning_details,
+                          codex_reasoning_items, codex_message_items, platform_message_id,
+                          observed, api_content, display_kind, display_metadata,
+                          display_identity, display_order, message_uid, absorbed_message_uids,
+                          tool_call_uids, tool_call_uid
+                   FROM messages WHERE session_id = ? ORDER BY id""", (child_id,)).fetchall()
+            if not rows:
+                return 1  # nothing to move — trivially done
+            conn.executemany(
+                """INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls,
+                      tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                      reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
+                      codex_message_items, platform_message_id, observed, api_content,
+                      display_kind, display_metadata, display_identity, display_order,
+                      message_uid, absorbed_message_uids, tool_call_uids, tool_call_uid)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [(parent_id,) + tuple(None if i == 22 else v for i, v in enumerate(r))
+                 for r in rows])
+            # detach moved rows from the child so the overlay never replays them twice
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (child_id,))
+            return len(rows)
+
+        rc = self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        return bool(rc)

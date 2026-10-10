@@ -169,3 +169,106 @@ class TestTranscriptOverlay:
         assert not any("msg" in str(m["content"]) for m in h), \
             "lost base must not resurrect parent history"
         assert len(h) == 0  # child appended nothing of its own
+
+class TestAppendMove:
+    def test_append_moves_rows(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "s.db")
+        db.ensure_session("p", source="t", session_key="kp")
+        for i in range(1, 4):
+            db.append_messages_batch("p", [dict(role="user" if i % 2 else "assistant", content=f"m{i}")])
+        base = db.get_last_message_uid("p")
+        db.ensure_session("c", source="t", session_key="kc", parent_session_id="p")
+        bid = db.new_branch_id()
+        db.create_branch_row(bid, "p", "c", base)
+        db.append_messages_batch("c", [dict(role="user", content="branch work A"),
+                                        dict(role="assistant", content="branch reply B")])
+        ok = db._move_branch_rows_to_parent_sync(db.get_branch(bid))
+        assert ok
+        hp = db.get_messages_as_conversation("p")
+        contents = [str(m["content"]) for m in hp]
+        assert "branch work A" in contents[-2] and "branch reply B" in contents[-1]
+        # moved rows lose fork identity
+        db.set_branch_status(bid, "joined", join_strategy="append")
+        assert not any("branch" in str(m["content"]) for m in db.get_messages_as_conversation("c"))
+        db.close()
+
+    def test_append_refused_after_compaction(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "s2.db")
+        db.ensure_session("p", source="t", session_key="kp2")
+        for i in range(1, 5):
+            db.append_messages_batch("p", [dict(role="user" if i % 2 else "assistant", content=f"x{i}")])
+        base = db.get_last_message_uid("p")
+        db.ensure_session("c", source="t", session_key="kc2", parent_session_id="p")
+        bid = db.new_branch_id()
+        db.create_branch_row(bid, "p", "c", base)
+        # симулировать компакцию родителя ПОСЛЕ базы: вставить summary-строку в хвост
+        db.append_messages_batch("p", [dict(role="assistant", content="SUMMARY",
+                                            _compressed_summary="summary text")])
+        assert not db._move_branch_rows_to_parent_sync(db.get_branch(bid))
+        db.close()
+
+class TestParentPinning:
+    def test_archive_and_compact_keeps_pinned_prefix_active(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "s.db")
+        db.ensure_session("p", source="t", session_key="kp")
+        for i in range(1, 7):
+            db.append_messages_batch("p", [dict(role="user" if i % 2 else "assistant", content=f"m{i}")])
+        rows = db._read_all("SELECT id, message_uid FROM messages WHERE session_id='p' ORDER BY id")
+        base_uid = rows[2]["message_uid"]  # fork at 3rd row
+        db.ensure_session("c", source="t", session_key="kc", parent_session_id="p")
+        bid = db.new_branch_id()
+        db.create_branch_row(bid, "p", "c", base_uid)
+        # parent compacts away everything (simulated: summary replaces all)
+        compacted = [dict(role="user", content="[summary of everything]")]
+        watermark = rows[-1]["id"]
+        db.archive_and_compact("p", compacted, watermark=watermark)
+        # prefix m1..m3 must survive as ACTIVE for the branch overlay
+        h = db.get_messages_as_conversation("c")
+        contents = [str(m["content"]) for m in h]
+        assert any("m1" in c for c in contents), "pinned prefix lost"
+        assert not any("m6" in c for c in contents), "post-base rows leaked into overlay"
+        db.close()
+
+
+class TestAgentTools:
+    def test_fork_and_join_tools(self, tmp_path):
+        from hermes_state import SessionDB
+        import tools.session_fork_tool as sft
+        db = SessionDB(db_path=tmp_path / "s.db")
+        db.ensure_session("p", source="t", session_key="kp")
+        for i in range(1, 4):
+            db.append_messages_batch("p", [dict(role="user" if i % 2 else "assistant", content=f"m{i}")])
+        out = sft.session_fork("side topic", db=db, current_session_id="p")
+        import json as _json
+        data = _json.loads(out)
+        assert data["ok"], data
+        bid = data["branch_id"]
+        assert db.has_active_branches("p")
+        # append strategy via tool-layer move+close
+        db.append_messages_batch(data["child_session_id"],
+                                 [dict(role="user", content="branch note")])
+        out2 = sft.session_join(branch_id=bid, strategy="append", db=db, current_session_id="p")
+        d2 = _json.loads(out2)
+        assert d2["ok"], d2
+        hp = db.get_messages_as_conversation("p")
+        assert any("branch note" in str(m["content"]) for m in hp)
+        db.close()
+
+    def test_join_rejects_foreign_branch(self, tmp_path):
+        from hermes_state import SessionDB
+        import tools.session_fork_tool as sft
+        db = SessionDB(db_path=tmp_path / "s2.db")
+        db.ensure_session("other", source="t", session_key="k1")
+        db.ensure_session("mine", source="t", session_key="k2")
+        db.append_messages_batch("other", [dict(role="user", content="x")])
+        base = db.get_last_message_uid("other")
+        db.ensure_session("oc", source="t", session_key="k1@bf", parent_session_id="other")
+        bid = db.new_branch_id()
+        db.create_branch_row(bid, "other", "oc", base)
+        out = sft.session_join(branch_id=bid, strategy="note", db=db, current_session_id="mine")
+        import json as _json
+        assert not _json.loads(out)["ok"]
+        db.close()
