@@ -64,7 +64,8 @@ except ImportError:
 
     EventType = type("_EventTypeStub", (), {  # type: ignore[misc,assignment]
         "ROOM_MESSAGE": "m.room.message", "REACTION": "m.reaction",
-        "ROOM_ENCRYPTED": "m.room.encrypted", "ROOM_NAME": "m.room.name"})
+        "ROOM_ENCRYPTED": "m.room.encrypted", "ROOM_NAME": "m.room.name",
+        "TYPING": "m.typing"})
     PresenceState = type("_PresenceStateStub", (), {  # type: ignore[misc,assignment]
         "ONLINE": "online", "OFFLINE": "offline", "UNAVAILABLE": "unavailable"})
     RoomCreatePreset = type("_RoomCreatePresetStub", (), {  # type: ignore[misc,assignment]
@@ -901,6 +902,22 @@ class MatrixAdapter(BasePlatformAdapter):
         # Text batching merges client-side splits (~4000 chars) of one long message.
         self._text_batch_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6"))
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
+        # Media hold window (opt-in, default off): media events from a sender wait this many
+        # seconds before dispatch so a following caption/text joins the SAME turn — the
+        # "share a snapshot from another app, then type the accompaniment" flow where the
+        # caption physically cannot ride the file event. An inbound m.typing from that sender
+        # extends the window (typing is coarse: Synapse re-announces at most ~every 25-30s,
+        # so the mark carries a 28s TTL), and sequential media from one share slide it too.
+        # _media_hold_cap_seconds is the never-exceed hard cap: worst case, a batch flushes.
+        self._media_hold_seconds = self._coerce_float_extra(
+            "media_hold_seconds",
+            _env_number("HERMES_MATRIX_MEDIA_HOLD_SECONDS", 0.0, float), max_value=30.0)
+        self._media_hold_cap_seconds = self._coerce_float_extra(
+            "media_hold_cap_seconds", max(8.0, self._media_hold_seconds), max_value=60.0)
+        # (room_id, sender) -> {"events": [...], "texts": [...], "opened": ts, "deadline": ts, "task": Task|None}
+        self._media_batches: dict[tuple[str, str], dict] = {}
+        # (room_id, user_id) -> monotonic-ish expiry set from inbound m.typing heartbeats
+        self._typing_marks: dict[tuple[str, str], float] = {}
         self._approval_reaction_map = {
             "✅": "once", "🌀": "session", "♾️": "always", "♾": "always", "\u267e\ufe0f": "always",
             "\u267e": "always", "❌": "deny", "❎": "deny"}
@@ -1356,6 +1373,7 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_dispatcher(MembershipEventDispatcher)  # without this INVITE never fires
         client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message, wait_sync=True)
         client.add_event_handler(EventType.REACTION, self._on_reaction, wait_sync=True)
+        client.add_event_handler(EventType.TYPING, self._on_typing, wait_sync=True)
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)
         self._startup_ts = time.time()
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
@@ -1373,6 +1391,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._closing = True
+        # Drop pending media-hold batches: their flush tasks would race a reconnecting adapter.
+        for key, batch in list(self._media_batches.items()):
+            if batch.get("task") and not batch["task"].done():
+                batch["task"].cancel()
+            self._media_batches.pop(key, None)
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
             try:
@@ -2344,9 +2367,97 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
-        if msg_event is not None:
+        if self._media_hold_seconds <= 0:
+            # Hold window disabled (default): legacy immediate dispatch (msg_event may be None
+            # only when gating dropped it; handle_message is not called for None today either —
+            # keep that semantic by guarding).
+            if msg_event is None:
+                return
             await self._maybe_wait_llm_delay(room_id)
             await self.handle_message(msg_event)
+        elif msg_event is not None:
+            self._hold_for_batch(msg_event)
+
+    def _typing_active(self, room_id: str, sender: str) -> bool:
+        """True while the sender's m.typing mark (28s TTL per heartbeat) is unexpired."""
+        expiry = self._typing_marks.get((room_id, sender), 0.0)
+        return time.time() < expiry
+
+    def _typing_extend(self, room_id: str, user_id: str) -> None:
+        """Record/refresh a typing mark; m.typing carries no stop event we can rely on
+        (send clears it, but an app crash does not), so marks expire on their own."""
+        self._typing_marks[(room_id, user_id)] = time.time() + 28.0
+
+    def _hold_for_batch(self, msg_event: MessageEvent) -> None:
+        """Put a media MessageEvent into its (room, sender) hold bucket and arm the flusher."""
+        key = (msg_event.source.chat_id, msg_event.user_id or "")
+        now = time.time()
+        batch = self._media_batches.get(key)
+        if batch is None:
+            batch = {"events": [], "opened": now, "deadline": now + self._media_hold_cap_seconds,
+                     "task": None}
+            self._media_batches[key] = batch
+        batch["events"].append(msg_event)
+        # Typing active → the accompaniment is being typed: slide the whole window forward.
+        sliding = self._media_hold_seconds if not self._typing_active(*key) else min(
+            max(self._media_hold_seconds * 2, 1.5), self._media_hold_cap_seconds)
+        # Never past the absolute cap measured from batch open (worst case, a batch flushes).
+        batch["deadline"] = min(max(now + sliding, batch["deadline"]),
+                                batch["opened"] + self._media_hold_cap_seconds)
+        if batch["task"] is None or batch["task"].done():
+            loop_delay = batch["deadline"] - now
+            batch["task"] = asyncio.create_task(self._flush_media_batch_after(key, loop_delay))
+
+    async def _flush_media_batch_after(self, key: tuple[str, str], delay: float) -> None:
+        try:
+            await asyncio.sleep(max(0.05, delay))
+        except asyncio.CancelledError:
+            return  # superseded by a re-armed timer; the newer task owns the flush
+        await self._flush_media_batch(key)
+
+    async def _flush_media_batch(self, key: tuple[str, str]) -> None:
+        batch = self._media_batches.pop(key, None)
+        if batch is None:
+            return
+        events: list[MessageEvent] = batch["events"]
+        if not events:
+            return
+        merged = events[0] if len(events) == 1 else self._merge_media_events(events)
+        await self._maybe_wait_llm_delay(key[0])
+        await self.handle_message(merged)
+
+    @staticmethod
+    def _merge_media_events(events: list[MessageEvent]) -> MessageEvent:
+        """Fuse N held media events into one turn: all attachments ride media_urls/media_types;
+        trailing caption text (non-filename bodies) is appended to the text in arrival order."""
+        import copy
+        base = events[0]
+        captions: list[str] = []
+        for ev in events:
+            if ev.text and ev.text.strip():
+                captions.append(ev.text.strip())
+        merged = copy.copy(base)  # shallow: SessionSource and reply fields are shared as-is
+        merged.text = "\n".join(captions)
+        merged.message_id = events[-1].message_id
+        merged.raw_message = [ev.raw_message for ev in events]
+        merged.media_urls = [u for ev in events for u in ev.media_urls]
+        merged.media_types = [t for ev in events for t in ev.media_types]
+        merged.media_text_inlined = [i for ev in events for i in (ev.media_text_inlined or [])]
+        return merged
+
+    async def _on_typing(self, event: Any) -> None:
+        """Inbound m.typing: remember who is typing so a pending media-hold batch waits for
+        their caption. Event has no event_id and fires at most ~every 25-30s per sender."""
+        room_id = str(getattr(event, "room_id", ""))
+        content = getattr(event, "content", None)
+        user_ids = list(getattr(content, "user_ids", None) or [])
+        self_ = self._user_id
+        for uid in user_ids:
+            if uid and uid != self_:
+                self._typing_extend(room_id, uid)
+                logger.debug("Matrix: %s is typing in %s (media hold may extend)", uid, room_id)
+
+
 
     @staticmethod
     def _classify_inbound_media(
