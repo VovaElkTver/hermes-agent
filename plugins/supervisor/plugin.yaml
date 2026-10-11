@@ -1,0 +1,15 @@
+name: supervisor
+version: "0.1.0"
+description: >-
+  Step-by-step supervision of delegated subagents. Watches every child tool call
+  (pre/post_tool_call), enforces verify-after-write gates, fires rule-based
+  block / annotate / steer / interrupt triggers from config.yaml, and can run an
+  optional LLM judge (any OpenAI-compatible endpoint, e.g. local vLLM) at tool
+  boundaries. Requires plugins.isolation: in_process (direct registry access).
+author: "reference implementation"
+provides_hooks:
+  - subagent_start
+  - subagent_stop
+  - pre_tool_call
+  - post_tool_call
+  - transform_tool_result

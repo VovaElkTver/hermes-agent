@@ -1,0 +1,141 @@
+# Merge into ~/.hermes/config.yaml (or a profile's config.yaml).
+# Verified against hermes-agent main @ 2026-10-10. Keys marked [native] are Hermes settings;
+# everything under plugins.entries.supervisor.settings is read by the supervisor plugin via ctx.get_config().
+
+# ── Delegation topology [native] ─────────────────────────────────────────────────────────────
+delegation:
+  max_spawn_depth: 2              # 1 = flat; 2 = orchestrator child -> leaf grandchildren
+  orchestrator_enabled: true
+  max_concurrent_children: 3      # keep small: every child is supervised + reviewed
+  independent_completions: true   # each task returns on its own -> parent reviews per task, not per batch
+  max_iterations: 120             # per-child budget
+  child_timeout_seconds: 900      # inactivity cap (not wall time)
+  subagent_auto_approve: false    # children auto-DENY approval prompts; "approve" escalations = deny
+  worktree_isolation: true        # each child edits its own git worktree; parent merges after review
+  # model: ""                     # optionally a cheaper worker model; supervisor/judge can differ
+
+agent:
+  verify_guidance: true           # built-in evidence-based verify-on-stop nudge for edited code
+  max_verify_nudges: 3            # cap on consecutive pre_verify "continue" nudges per turn
+
+display:
+  busy_input_mode: steer          # what YOU type while a turn runs is steered in, not an interrupt
+
+# ── Plugin host [native] ─────────────────────────────────────────────────────────────────────
+plugins:
+  enabled:
+    - supervisor
+  isolation: in_process           # REQUIRED: the plugin calls tools.delegate_tool_registry directly
+  hook_callback_timeout: 30       # pre_tool_call overrun FAILS CLOSED; keep judge.gate_wait_seconds below it
+
+  entries:
+    supervisor:
+      settings:
+        enabled: true
+        log_path: ~/.hermes/supervisor/audit.jsonl
+
+        # Deterministic step-by-step verification: after max_unverified_writes edits, the next
+        # write_file/patch is BLOCKED until a verification command actually PASSES (failing
+        # pytest no longer clears the backlog — success is judged from status + result text).
+        gate:
+          enabled: true
+          mutating_tools: [write_file, patch]
+          verifying_tools: [terminal]
+          verify_command_regex: "(pytest|ruff|mypy|npm (run )?test|cargo test|go test|make (test|check))"
+          verify_failure_regex: "(?i)(\\d+ (failed|errors)|\\bFAILED\\b|Traceback \\(most recent call|\"exit_code\":\\s*[1-9])"
+          max_unverified_writes: 2
+          warn_on_unverified_exit: true
+
+        # Rule triggers, evaluated in order at each child tool boundary.
+        #   when:    pre_tool_call | post_tool_call   (not "on:" — YAML 1.1 parses it as boolean true)
+        #   action:  pre  -> block | steer | interrupt | escalate
+        #            post -> annotate | steer | interrupt | escalate
+        triggers:
+          - name: no-force-push
+            when: pre_tool_call
+            tool: terminal
+            args_regex: {command: "git\\s+push\\b.*(--force|-f\\b)"}
+            action: block
+            message: "Force-push is not allowed for workers. Commit on your branch and report instead."
+
+          - name: no-destructive-rm
+            when: pre_tool_call
+            tool: terminal
+            args_regex: {command: "rm\\s+-[a-zA-Z]*r[a-zA-Z]*f?\\s+(/|~|\\.\\.?)(\\s|$)"}
+            action: interrupt
+            message: "Destructive delete outside the work tree attempted."
+
+          - name: stay-in-scope
+            when: pre_tool_call
+            tool: "write_file|patch"
+            args_regex: {path: "^(/etc|/usr|~/.hermes|.*\\.github/workflows)"}
+            action: block
+            message: "That path is outside the task scope. Edit only files under the project source tree."
+
+          - name: test-failure
+            when: post_tool_call
+            tool: terminal
+            args_regex: {command: "pytest|npm (run )?test|cargo test"}
+            result_regex: "(\\d+ failed|FAILED|Error:|Traceback)"
+            action: annotate
+            message: "Verification failed. Fix the FIRST failure only, rerun the same command, and do not start new edits elsewhere."
+
+          - name: repeated-errors
+            when: post_tool_call
+            consecutive_errors_gte: 3
+            action: steer
+            max_fires: 1
+            message: "Three tool errors in a row. Stop retrying the same approach; re-read the goal, state a new plan in one sentence, then continue."
+
+          - name: error-loop-escalate
+            when: post_tool_call
+            consecutive_errors_gte: 6
+            action: escalate
+            max_fires: 1
+            message: "Worker appears stuck in an error loop."
+
+          - name: runaway-budget
+            when: post_tool_call
+            tool_count_gte: 80
+            action: interrupt
+            max_fires: 1
+            message: "Tool budget for this worker exceeded; returning partial result for review."
+
+        # Optional LLM judge at intermediate boundaries (any OpenAI-compatible endpoint, e.g. local vLLM).
+        judge:
+          enabled: false
+          base_url: http://127.0.0.1:8000/v1
+          model: Qwen/Qwen3-30B-A3B-Instruct-2507
+          api_key_env: SUPERVISOR_JUDGE_API_KEY
+          on_tools: [write_file, patch]   # review after every edit...
+          every_n_tools: 6                # ...and every N tool calls regardless
+          history_window: 8
+          max_context_chars: 12000
+          timeout_seconds: 20
+          gate_wait_seconds: 12           # next pre_tool_call waits this long for the verdict (< hook_callback_timeout)
+          gate_max_stale_calls: 2         # verdicts older than N tool calls are dropped, not applied to fresh calls
+          on_revise: block                # block = synchronous correction; steer = queued, non-blocking
+
+# ── Shell-hook fallback (use INSTEAD of the plugin, not together) [native] ───────────────────
+# hooks:
+#   subagent_start:
+#     - command: "~/.hermes/agent-hooks/child-gate.py"
+#   subagent_stop:
+#     - command: "~/.hermes/agent-hooks/child-gate.py"
+#   pre_tool_call:
+#     - matcher: "terminal|write_file|patch"
+#       command: "~/.hermes/agent-hooks/child-gate.py"
+#       timeout: 10
+#       fail_closed: true
+#   post_tool_call:
+#     - matcher: "write_file|patch"
+#       command: "~/.hermes/agent-hooks/child-gate.py"
+#       timeout: 10
+# hooks_auto_accept: false        # true (or HERMES_ACCEPT_HOOKS=1) for gateway/cron runs
+
+# ── Supervisor persona for the top-level orchestrator [native] ───────────────────────────────
+# personalities:
+#   supervisor:
+#     description: "Orchestrator that reviews delegated work at checkpoints"
+#     system_prompt: |
+#       (paste prompts/orchestrator.md here, then run /personality supervisor)
