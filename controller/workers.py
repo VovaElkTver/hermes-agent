@@ -38,6 +38,7 @@ def make_worker(conn, *, timeout_s: int = 1800,
                 env.update(extra_env)
             proc = subprocess.run(
                 [exe, "chat", "--query-file", qf.name, "--oneshot", "-Q",
+                 "--in", task["workdir"],
                  "--run-budget", str(timeout_s)],
                 cwd=task["workdir"], capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=timeout_s + 60, env=env)
@@ -86,6 +87,10 @@ def make_review(conn, *, judge_cfg: dict | None = None):
             hist = [{"role": "assistant", "content": tail[:8000]}]
             v = _j(judge_cfg, step.get("title", "step"), hist)
             verdict = v.get("verdict", "revise")
+            # judge.review is fail-OPEN (advisory checkpoint use); completion needs
+            # fail-closed: a 'pass' whose reason says the judge was unreachable is not a pass.
+            if verdict == "pass" and "judge unavailable" in (v.get("reason") or ""):
+                return {"verdict": "needs_human", "detail": v["reason"]}
             # code-side gate: worker must have exited clean for a pass
             if verdict == "pass" and artifacts and artifacts[0].get("returncode") not in (0, None):
                 return {"verdict": "revise", "detail": "judge pass but worker exit != 0"}

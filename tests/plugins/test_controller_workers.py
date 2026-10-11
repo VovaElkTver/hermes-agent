@@ -71,6 +71,17 @@ def test_review_fail_closed_on_judge_error(env, monkeypatch):
     assert out["verdict"] == "needs_human" and "unavailable" in out["detail"]
 
 
+def test_review_fail_closed_on_failopen_judge_pass(env, monkeypatch):
+    """judge.review fails OPEN for checkpoints; completion must not inherit that."""
+    c, wd, _ = env
+    import plugins.supervisor.judge as j
+    monkeypatch.setattr(j, "review", lambda *a, **k: {
+        "verdict": "pass", "reason": "judge unavailable: KeyError", "instruction": ""})
+    rv = make_review(c, judge_cfg={"model": "x"})
+    out = rv({"run_id": "r"}, {"step_id": "s"}, [{"stdout_tail": "ok", "returncode": 0}])
+    assert out["verdict"] == "needs_human"
+
+
 def test_review_gate_rejects_pass_when_worker_failed(env, monkeypatch):
     c, wd, _ = env
     import plugins.supervisor.judge as j
