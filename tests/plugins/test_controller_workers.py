@@ -156,3 +156,202 @@ def test_pump_cli_permission_off_noop(env, monkeypatch):
     monkeypatch.setattr(model, "connect", lambda db_path=None: env[0])
     out = pump_cli.main(["--scope", "/nonexistent-scope"])
     assert out == 0
+
+
+# --- Windows-native timeout kill (audit of PR8-16) -------------------------
+# os.killpg/getpgid do not exist on Windows (AttributeError escaped the except)
+# and start_new_session is silently ignored by CPython there, so a timed-out
+# worker left orphaned grandchildren writing into the task workdir.
+
+def test_spawn_kwargs_posix_uses_start_new_session(monkeypatch):
+    import os as _os
+    from controller import workers
+    monkeypatch.setattr(_os, "name", "posix")
+    kw = workers._spawn_kwargs()
+    assert kw == {"start_new_session": True}
+
+
+def test_spawn_kwargs_nt_uses_creationflags(monkeypatch):
+    import os as _os
+    from controller import workers
+    monkeypatch.setattr(_os, "name", "nt")
+    kw = workers._spawn_kwargs()
+    assert "start_new_session" not in kw, "CPython ignores it on Windows"
+    assert kw["creationflags"] == (workers.CREATE_NEW_PROCESS_GROUP
+                                   | workers.DETACHED_PROCESS)
+
+
+def test_kill_tree_nt_uses_taskkill_and_never_touches_killpg(monkeypatch):
+    import os as _os
+    from controller import workers
+
+    class FakeProc:
+        pid = 4242
+
+    runs = []
+    def fake_run(cmd, **kw):
+        runs.append((cmd, kw))
+    monkeypatch.setattr(_os, "name", "nt")
+    monkeypatch.setattr(workers.subprocess, "run", fake_run)
+    # If the nt branch reached for killpg/getpgid, these recorders fire.
+    pg = []
+    monkeypatch.setattr(_os, "killpg", lambda *a: pg.append(a), raising=False)
+    monkeypatch.setattr(_os, "getpgid", lambda p: pg.append(("getpgid", p)), raising=False)
+
+    workers._kill_tree(FakeProc())
+    assert pg == [], "nt path must not reference os.killpg/getpgid"
+    cmd, kw = runs[0]
+    assert cmd == ["taskkill", "/T", "/F", "/PID", "4242"]
+    assert kw.get("capture_output") is True and kw.get("timeout") == 15
+
+
+def test_kill_tree_nt_survives_taskkill_failure(monkeypatch):
+    import os as _os
+    from controller import workers
+
+    class FakeProc:
+        pid = 1
+
+    def boom(*a, **k):
+        raise OSError("taskkill missing")
+    monkeypatch.setattr(_os, "name", "nt")
+    monkeypatch.setattr(workers.subprocess, "run", boom)
+    workers._kill_tree(FakeProc())  # must not raise
+
+
+def test_kill_tree_posix_uses_killpg(monkeypatch):
+    import os as _os
+    import signal as _signal
+    from controller import workers
+
+    class FakeProc:
+        pid = 4242
+
+    calls = []
+    monkeypatch.setattr(_os, "name", "posix")
+    monkeypatch.setattr(_os, "getpgid", lambda pid: pid * 10)
+    monkeypatch.setattr(_os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
+    workers._kill_tree(FakeProc())
+    assert calls == [(42420, _signal.SIGKILL)]
+
+
+def test_kill_tree_posix_missing_killpg_is_swallowed(monkeypatch):
+    """Regression: AttributeError (Windows-style missing primitive) must not
+    escape the defensive except."""
+    import os as _os
+    from controller import workers
+
+    class FakeProc:
+        pid = 4242
+
+    monkeypatch.setattr(_os, "name", "posix")
+    monkeypatch.delattr(_os, "getpgid", raising=False)
+    monkeypatch.delattr(_os, "killpg", raising=False)
+    workers._kill_tree(FakeProc())  # must not raise
+
+
+def test_worker_timeout_path_routes_through_kill_tree(env, monkeypatch):
+    """Offline: Popen mock whose communicate() raises TimeoutExpired proves the
+    timeout arm returns 'failed' AND tree-kills the detached group."""
+    import subprocess as _sp
+    from controller import workers
+
+    class FakeProc:
+        pid = 9999
+        returncode = None
+        def communicate(self, timeout=None):
+            if timeout is not None:
+                raise _sp.TimeoutExpired("hermes", timeout)
+            return ("", "")
+
+    killed = []
+    monkeypatch.setattr(workers, "_kill_tree", lambda proc: killed.append(proc.pid))
+    monkeypatch.setattr(workers.subprocess, "Popen", lambda *a, **k: FakeProc())
+    c, wd, fake = env
+    tid, st = _task(c, wd)
+    res = workers.make_worker(c, hermes_bin=fake, timeout_s=1)(
+        {"run_id": "r"}, {"task_id": tid, "workdir": wd, "goal": "X"},
+        {"step_id": st, "kind": "impl", "title": "x"})
+    assert res["status"] == "failed" and res["error"] == "worker timeout"
+    assert killed == [9999]
+
+
+def test_worker_spawn_receives_os_appropriate_flags(env, monkeypatch):
+    """The Popen call in worker_fn must get creationflags on nt (not the
+    ignored start_new_session) and start_new_session on posix. make_worker
+    resolves the branch at binding time, so patch os.name only around it."""
+    import os as _os
+    from controller import workers
+
+    seen = {}
+    class FakeProc:
+        pid = 1
+        returncode = 0
+        def communicate(self, timeout=None):
+            return ("ok", "")
+    def fake_popen(*a, **k):
+        seen.update(k)
+        return FakeProc()
+    monkeypatch.setattr(workers.subprocess, "Popen", fake_popen)
+    c, wd, fake = env
+    tid, st = _task(c, wd)
+    run, task, step = ({"run_id": "r"}, {"task_id": tid, "workdir": wd, "goal": "X"},
+                       {"step_id": st, "kind": "impl", "title": "x"})
+
+    monkeypatch.setattr(_os, "name", "nt")
+    w_nt = workers.make_worker(c, hermes_bin=fake, timeout_s=60)
+    monkeypatch.undo()
+    monkeypatch.setattr(workers.subprocess, "Popen", fake_popen)
+    seen.clear()
+    w_nt(run, task, step)
+    assert seen["creationflags"] == (workers.CREATE_NEW_PROCESS_GROUP
+                                     | workers.DETACHED_PROCESS)
+    assert "start_new_session" not in seen
+
+    seen.clear()
+    w_posix = workers.make_worker(c, hermes_bin=fake, timeout_s=60)
+    w_posix(run, task, step)
+    assert seen["start_new_session"] is True
+    assert "creationflags" not in seen
+
+
+def test_maybe_pump_spawn_receives_os_appropriate_flags(monkeypatch):
+    """plugins/controller pump spawn: branch selection via _pump_spawn_kwargs
+    (same flags as the worker), and _maybe_pump must forward the resolved
+    kwargs to Popen."""
+    import os as _os
+    import plugins.controller as pc
+    from controller import workers
+
+    # branch selection (fake os.name, call the pure resolver)
+    monkeypatch.setattr(_os, "name", "nt")
+    kw_nt = pc._pump_spawn_kwargs()
+    assert kw_nt == {"creationflags": workers.CREATE_NEW_PROCESS_GROUP
+                               | workers.DETACHED_PROCESS}
+    monkeypatch.setattr(_os, "name", "posix")
+    assert pc._pump_spawn_kwargs() == {"start_new_session": True}
+    monkeypatch.undo()
+
+    # wiring: real Popen spy sees the resolved detached flags
+    seen = {}
+    class FakeProc:
+        pid = 1
+    def fake_popen(*a, **k):
+        seen.update(k)
+        return FakeProc()
+    monkeypatch.setattr(pc._sp, "Popen", fake_popen)
+    monkeypatch.setattr(pc, "_last_pump", 0.0)
+    monkeypatch.setattr(pc, "_PUMP_SPAWN_KWARGS",
+                        {"creationflags": workers.CREATE_NEW_PROCESS_GROUP
+                                         | workers.DETACHED_PROCESS})
+    pc._maybe_pump("default")
+    assert seen["creationflags"] == (workers.CREATE_NEW_PROCESS_GROUP
+                                     | workers.DETACHED_PROCESS)
+    assert "start_new_session" not in seen
+
+    seen.clear()
+    monkeypatch.setattr(pc, "_last_pump", 0.0)
+    monkeypatch.setattr(pc, "_PUMP_SPAWN_KWARGS", {"start_new_session": True})
+    pc._maybe_pump("default")
+    assert seen["start_new_session"] is True
+    assert "creationflags" not in seen

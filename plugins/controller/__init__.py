@@ -132,6 +132,23 @@ import time as _time
 _last_pump = 0.0
 
 
+def _pump_spawn_kwargs() -> dict:
+    """Same OS branch as the worker spawn (controller.workers._spawn_kwargs).
+    Resolved once at plugin-import time so a missing/failing import can't ride
+    inside _maybe_pump's broad except and silently kill the pump spawn."""
+    try:
+        from controller.workers import _spawn_kwargs
+        return _spawn_kwargs()
+    except Exception:
+        import os as _os
+        if _os.name == "nt":
+            return {"creationflags": 0x00000200 | 0x00000008}  # NEW_PROCESS_GROUP|DETACHED
+        return {"start_new_session": True}
+
+
+_PUMP_SPAWN_KWARGS = _pump_spawn_kwargs()
+
+
 def _maybe_pump(scope: str) -> None:
     """Fire-and-forget detached pump after a turn (spec §20 loop runner). Cooldown
     prevents spawn thrash; the pump process itself no-ops when permission is off or
@@ -146,7 +163,7 @@ def _maybe_pump(scope: str) -> None:
         _sp.Popen([sys.executable, "-m", "controller.pump_cli", "--scope", scope],
                   cwd=str(Path(__file__).resolve().parents[2]),
                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                  start_new_session=True)
+                  **_PUMP_SPAWN_KWARGS)
     except Exception as exc:
         logger.debug("controller pump spawn failed: %s", exc)
 
