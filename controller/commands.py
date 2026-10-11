@@ -18,6 +18,8 @@ RX = {
     "resume": re.compile(r"(продолжай\s+автономно|возобнови\s+автономность|resume\s+autonomy)", re.I),
     "cancel": re.compile(r"отмени\s+задачу\s+(\S+)|cancel\s+task\s+(\S+)", re.I),
     "status": re.compile(r"(статус\s+задач|покажи\s+статус|show\s+status)", re.I),
+    "head": re.compile(r"(?:подними\s+задачу\s+(\S+)\s+в\s+(?:начало|первое)|move\s+task\s+(\S+)\s+(?:to\s+)?head)", re.I),
+    "tail": re.compile(r"(?:опусти\s+задачу\s+(\S+)\s+в\s+конец(?:\s+очереди)?|move\s+task\s+(\S+)\s+tail)", re.I),
 }
 
 
@@ -55,6 +57,13 @@ def apply(conn, op: dict, *, scope: str) -> dict:
                                        basis="user cancel command")
             return {"ok": True, "op": kind, **r}
         except (LookupError, ValueError) as e:
+            return {"ok": False, "op": kind, "error": str(e)}
+    if kind in ("head", "tail"):
+        from . import model as _m
+        try:
+            _m.set_priority(conn, op["arg"], head=(kind == "head"))
+            return {"ok": True, "op": kind, "task_id": op["arg"]}
+        except LookupError as e:
             return {"ok": False, "op": kind, "error": str(e)}
     if kind == "status":
         rows = conn.execute("SELECT task_id, state, contract_version FROM ctl_task").fetchall()

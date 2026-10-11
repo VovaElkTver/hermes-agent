@@ -41,6 +41,43 @@ def pass_review(run, step, arts):
     return {"verdict": "pass"}
 
 
+def test_position_head_tail_and_requeue(env):
+    """put-first/put-last: create_task(position=) + set_priority via editorial revision."""
+    c, wd = env
+    a = model.create_task(c, owner="o", workdir=wd, goal="a")
+    b = model.create_task(c, owner="o", workdir=wd, goal="b")
+    for x in (a, b):
+        c.execute("UPDATE ctl_task SET state='ready' WHERE task_id=?", (x,))
+    c.commit()
+    assert [t["task_id"] for t in Q.eligible(c, wd)] == [a, b]  # FIFO at equal priority
+    j = model.create_task(c, owner="o", workdir=wd, goal="j", position="head")
+    c.execute("UPDATE ctl_task SET state='ready' WHERE task_id=?", (j,))
+    c.commit()
+    assert Q.eligible(c, wd)[0]["task_id"] == j
+    model.agree_contract(c, b)
+    model.set_priority(c, j, head=False)
+    assert Q.eligible(c, wd)[-1]["task_id"] == j
+    # requeue only touches ready/draft; a running task cannot jump its own queue
+    c.execute("UPDATE ctl_task SET state='running' WHERE task_id=?", (a,))
+    c.commit()
+    try:
+        model.set_priority(c, a, head=True); assert False
+    except ValueError:
+        pass
+    # editorial revision over an agreed MATERIAL stays agreed (no re-agreement needed)
+    assert model.material_agreed(c, b)
+
+
+def test_requeue_commands_route_from_user_only():
+    from controller import commands
+    r = commands.try_route("подними задачу task-x1 в начало", origin="user", sender_ok=True)
+    assert r and r["op"] == "head" and r["arg"] == "task-x1"
+    r = commands.try_route("опусти задачу task-y2 в конец очереди", origin="user", sender_ok=True)
+    assert r and r["op"] == "tail" and r["arg"] == "task-y2"
+    assert commands.try_route("подними задачу task-x1 в начало",
+                              origin="tool", sender_ok=True) is None  # docs can't requeue
+
+
 def test_empty_plan_blocks_instead_of_vacuous_complete(env):
     """PR dogfood: task with ZERO steps used to hit completed in 11ms (0<0 False in
     _reviews_current). §46 needs worker-done + review; an empty plan has neither."""
