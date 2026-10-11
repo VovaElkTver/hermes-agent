@@ -1518,6 +1518,10 @@ slash:
     description: "Передать этот сеанс в мессенджер (Telegram, Discord и т. д.)"
   branch:
     description: "Ответвить текущий сеанс (новый тред в Discord/Telegram/Slack/Matrix; --here — остаться здесь)"
+  fork:
+    description: "Создать ленивую ветку беседы с общей родительской историей (слить: /join)"
+  join:
+    description: "Присоединить ветку /fork обратно к сеансу (по умолчанию: work-note сводка; --append — перенести сообщения, --discard — отбросить)"
   worktree:
     description: "Показать, перечислить, создать или удалить изолированные git worktree"
   compress:

@@ -1601,6 +1601,10 @@ slash:
     description: "Hand off this session to a messaging platform (Telegram, Discord, etc.)"
   branch:
     description: "Branch the current session (new thread on Discord/Telegram/Slack/Matrix; --here stays here)"
+  fork:
+    description: "Fork the conversation into a lazy branch sharing the parent history (join with /join)"
+  join:
+    description: "Join a forked branch back into this session (default: work-note summary)"
   worktree:
     description: "Show, list, create, or prune isolated git worktrees"
   compress:
