@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -36,19 +37,33 @@ def make_worker(conn, *, timeout_s: int = 1800,
                    "HERMES_CONTROLLER_RUN_ID": run["run_id"]}
             if extra_env:
                 env.update(extra_env)
-            proc = subprocess.run(
+            # start_new_session: the worker's own grandchildren (terminal/browser tools)
+            # must die WITH it — SIGKILL of the direct child alone left orphans writing
+            # into the workdir after the pump marked the step failed (review finding 4).
+            proc = subprocess.Popen(
                 [exe, "chat", "--query-file", qf.name, "--oneshot", "-Q",
                  "--in", task["workdir"],
                  "--run-budget", str(timeout_s)],
-                cwd=task["workdir"], capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=timeout_s + 60, env=env)
-            artifacts = [{"stdout_tail": proc.stdout[-2000:],
-                          "returncode": proc.returncode}]
-            status = "finished" if proc.returncode == 0 else "failed"
+                cwd=task["workdir"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace", env=env,
+                start_new_session=True)
+            try:
+                out, err = proc.communicate(timeout=timeout_s + 60)
+                returncode = proc.returncode
+            except subprocess.TimeoutExpired:
+                # direct child + every tool grandchild share this new session:
+                # killpg guarantees nothing keeps writing into the workdir after failure
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                proc.communicate()
+                return {"status": "failed", "artifacts": [], "error": "worker timeout"}
+            artifacts = [{"stdout_tail": (out or "")[-2000:],
+                          "returncode": returncode}]
+            status = "finished" if returncode == 0 else "failed"
             return {"status": status, "artifacts": artifacts,
-                    "detail": (proc.stderr or "")[-500:]}
-        except subprocess.TimeoutExpired:
-            return {"status": "failed", "artifacts": [], "error": "worker timeout"}
+                    "detail": (err or "")[-500:]}
         finally:
             try:
                 os.unlink(qf.name)
@@ -87,10 +102,16 @@ def make_review(conn, *, judge_cfg: dict | None = None):
             hist = [{"role": "assistant", "content": tail[:8000]}]
             v = _j(judge_cfg, step.get("title", "step"), hist)
             verdict = v.get("verdict", "revise")
-            # judge.review is fail-OPEN (advisory checkpoint use); completion needs
-            # fail-closed: a 'pass' whose reason says the judge was unreachable is not a pass.
-            if verdict == "pass" and "judge unavailable" in (v.get("reason") or ""):
-                return {"verdict": "needs_human", "detail": v["reason"]}
+            # judge.review is fail-OPEN by design (advisory checkpoint); completion needs
+            # fail-closed. degraded is judge.py's machine flag (HTTP down, unparsable/empty
+            # completion, missing verdict field, off-whitelist verdict coerced to pass);
+            # the wording check covers judges older than the degraded flag; a pass with no
+            # reason sentence violates JUDGE_SYSTEM's contract (a real pass always explains).
+            reason = v.get("reason") or ""
+            if verdict == "pass" and (v.get("degraded") or "judge unavailable" in reason
+                                      or not reason.strip()):
+                return {"verdict": "needs_human",
+                        "detail": reason or "judge pass without reason (degraded)"}
             # code-side gate: worker must have exited clean for a pass
             if verdict == "pass" and artifacts and artifacts[0].get("returncode") not in (0, None):
                 return {"verdict": "revise", "detail": "judge pass but worker exit != 0"}
