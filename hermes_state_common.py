@@ -649,6 +649,67 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+-- ---- controller (managed autonomy; VovaElkTver fork, off by default) ----------
+-- Durable task/contract/run state per the managed-autonomy spec. ctl_ prefix avoids
+-- collisions with session tables. Task.state and Run.run_status are SEPARATE: a task
+-- may be cancelled while its run is still interrupt_requested. Writes go through the
+-- controller package only (controller/model.py, controller/transitions.py).
+CREATE TABLE IF NOT EXISTS ctl_task (
+  task_id TEXT PRIMARY KEY, owner TEXT NOT NULL, project_id TEXT, workdir TEXT NOT NULL,
+  goal TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'draft', contract_version INTEGER NOT NULL DEFAULT 1,
+  kanban_ref TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ctl_contract_revision (
+  task_id TEXT NOT NULL, version INTEGER NOT NULL, change_class TEXT NOT NULL DEFAULT 'MATERIAL',
+  fields TEXT NOT NULL, supersedes INTEGER, agreed_at REAL,
+  PRIMARY KEY (task_id, version)
+);
+CREATE TABLE IF NOT EXISTS ctl_approval (
+  approval_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, contract_version INTEGER NOT NULL,
+  action_class TEXT NOT NULL, execution_epoch INTEGER NOT NULL, granted_by TEXT NOT NULL,
+  granted_at REAL NOT NULL, revoked_at REAL
+);
+CREATE TABLE IF NOT EXISTS ctl_step (
+  step_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending', checkpoint INT NOT NULL DEFAULT 1,
+  depends_on TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS ctl_run (
+  run_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, step_id TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 1, worker_id TEXT, contract_version INTEGER NOT NULL,
+  execution_epoch INTEGER NOT NULL, input_artifacts TEXT NOT NULL DEFAULT '[]',
+  authority TEXT NOT NULL DEFAULT '[]', run_status TEXT NOT NULL DEFAULT 'starting',
+  started_at REAL, ended_at REAL
+);
+CREATE TABLE IF NOT EXISTS ctl_artifact_revision (
+  artifact_rev_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, run_id TEXT, kind TEXT NOT NULL,
+  payload TEXT NOT NULL, created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ctl_review (
+  review_id TEXT PRIMARY KEY, step_id TEXT NOT NULL, run_id TEXT NOT NULL,
+  artifact_hash TEXT NOT NULL, verdict TEXT NOT NULL, reviewer TEXT NOT NULL,
+  detail TEXT, created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ctl_autonomy_permission (
+  scope TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
+  execution_epoch INTEGER NOT NULL DEFAULT 0, granted_via TEXT, updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ctl_event (
+  event_id TEXT PRIMARY KEY, ts REAL NOT NULL, kind TEXT NOT NULL, task_id TEXT,
+  origin TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', idempotency_key TEXT UNIQUE
+);
+CREATE TABLE IF NOT EXISTS ctl_state_transition (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, task_id TEXT NOT NULL,
+  from_state TEXT NOT NULL, to_state TEXT NOT NULL, basis TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ctl_budget_counter (
+  task_id TEXT NOT NULL, metric TEXT NOT NULL, used REAL NOT NULL DEFAULT 0,
+  limit_value REAL, PRIMARY KEY (task_id, metric)
+);
+CREATE TABLE IF NOT EXISTS ctl_kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_ctl_run_task_status ON ctl_run(task_id, run_status);
+CREATE INDEX IF NOT EXISTS idx_ctl_event_task ON ctl_event(task_id, ts);
+-- ---- end controller ----
 """
 
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.

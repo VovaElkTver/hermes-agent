@@ -46,6 +46,22 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _ctl_flag_on() -> bool:
+    """controller.enabled from the raw config (top-level bool or plugins.entries.controller)."""
+    try:
+        import os
+        if os.environ.get("HERMES_CONTROLLER_ENABLED") == "1":
+            return True
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        if cfg.get("controller", {}).get("enabled"):
+            return True
+        return bool(cfg.get("plugins", {}).get("entries", {})
+                    .get("controller", {}).get("enabled"))
+    except Exception:
+        return False
+
+
 def discord_triggering_note(message_id: Any) -> str:
     """Model-facing routing note for a Discord turn (rides the API-bound user message only)."""
     return (
@@ -1305,6 +1321,36 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:
             return _paused_notice
+
+        # MANAGED AUTONOMITY ROUTER (fork, controller.enabled=false by default): control
+        # commands are applied by CODE before the agent turn — free RU wording maps to
+        # enable/pause/resume/cancel/status deterministically; the model never grants or
+        # revokes autonomy itself. Returns a reply string when the op fully answered the
+        # message (status/cancel), or an announcement that the turn proceeds with.
+        if not is_internal and _ctl_flag_on():
+            try:
+                from controller import commands as _ctl_cmds
+                _ctl_op = _ctl_cmds.try_route(
+                    event.text or "", origin="user",
+                    sender_ok=source.user_id is not None)
+                if _ctl_op is not None:
+                    _ctl_scope = getattr(source, "workdir", None) \
+                        or getattr(self, "_terminal_cwd", (lambda: "default"))()
+                    from controller import model as _ctl_model
+                    _ctl_db = _ctl_model.connect()
+                    try:
+                        _ctl_res = _ctl_cmds.apply(_ctl_db, _ctl_op, scope=_ctl_scope)
+                    finally:
+                        _ctl_db.close()
+                    _ctl_kind = _ctl_op["op"]
+                    if _ctl_kind in {"status", "cancel"} or not _ctl_res.get("ok", False):
+                        return f"[controller] {_ctl_kind}: {_ctl_res}"
+                    event = dataclasses.replace(
+                        event, text=(event.text or "") + (
+                            f"\n[controller] {_ctl_kind} applied by infrastructure: "
+                            f"epoch={_ctl_res.get('permission', {}).get('execution_epoch')}"))
+            except Exception as _ctl_exc:
+                logger.warning("controller router failed (turn proceeds): %s", _ctl_exc)
 
         _quick_key = self._session_key_for_source(source)
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)

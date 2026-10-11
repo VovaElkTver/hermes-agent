@@ -570,6 +570,18 @@ class GatewaySlashCommandsMixin(
 
         # Save the requester's routing info so the new gateway process can notify them once back.
         await _write_marker(".restart_notify.json", _notify_payload, "notify file")
+        # Managed-autonomy (fork): durable operator-restart intent, so the controller's
+        # recovery stays non-autonomous after /restart (a crash/plain restart has no marker
+        # and continues autonomously). Best-effort; the controller owns its own storage.
+        try:
+            from controller import model as _ctl_model
+            _ctl_conn = _ctl_model.connect()
+            try:
+                _ctl_model.mark_restart_intent(_ctl_conn, "operator")
+            finally:
+                _ctl_conn.close()
+        except Exception as _ctl_exc:
+            logger.debug("controller restart marker skipped: %s", _ctl_exc)
         # Record the triggering platform + update_id in a dedicated dedup marker. Unlike
         # .restart_notify.json (unlinked once the new gateway sends its notification) this persists
         # so a delayed Telegram redelivery is still detectable. Overwritten on every /restart.

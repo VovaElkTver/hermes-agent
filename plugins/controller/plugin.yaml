@@ -1,0 +1,4 @@
+name: controller
+version: "0.1.0"
+description: "Managed-autonomy controller — task/contract/run state, permission epochs, dispatch barrier. Off unless controller.enabled is true."
+manifest_version: 2
