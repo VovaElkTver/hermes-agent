@@ -45,6 +45,14 @@ def run_cycle(conn, *, scope: str, worker_fn, review_fn, max_steps: int = 50) ->
                 return log
         step = Q.next_step(conn, task["task_id"])
         if step is None:
+            total = conn.execute("SELECT COUNT(*) c FROM ctl_step WHERE task_id=?",
+                                 (task["task_id"],)).fetchone()["c"]
+            if total == 0:
+                transitions.transition(conn, task["task_id"], "blocked",
+                                       basis="empty plan: add steps before running")
+                log.append({"task": task["task_id"], "to": "blocked",
+                            "reason": "empty plan"})
+                continue
             transitions.transition(conn, task["task_id"], "verifying",
                                    basis="all steps done")
             outcome = finish_verifying(conn, task["task_id"])

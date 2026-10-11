@@ -41,6 +41,22 @@ def pass_review(run, step, arts):
     return {"verdict": "pass"}
 
 
+def test_empty_plan_blocks_instead_of_vacuous_complete(env):
+    """PR dogfood: task with ZERO steps used to hit completed in 11ms (0<0 False in
+    _reviews_current). §46 needs worker-done + review; an empty plan has neither."""
+    from controller import loop, model
+    c, wd = env
+    tid = model.create_task(conn=c, owner="o", workdir=wd, goal="g")
+    c.execute("UPDATE ctl_task SET state='ready' WHERE task_id=?", (tid,)); c.commit()
+    model.agree_contract(c, tid)
+    model.set_permission(c, wd, enabled=True, granted_via="user-command")
+    log = loop.run_cycle(c, scope=wd, worker_fn=lambda *a: {"status": "finished"},
+                         review_fn=lambda *a: {"verdict": "pass"}, max_steps=3)
+    task = c.execute("SELECT state FROM ctl_task WHERE task_id=?", (tid,)).fetchone()
+    assert task["state"] == "blocked", log
+    assert not c.execute("SELECT 1 FROM ctl_run WHERE task_id=?", (tid,)).fetchone()
+
+
 def test_queue_order_deps_and_notbefore(env):
     c, wd = env
     low = mk(c, wd, "low", priority=0)
