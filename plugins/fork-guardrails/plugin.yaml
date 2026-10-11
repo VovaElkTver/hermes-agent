@@ -1,0 +1,5 @@
+name: fork-guardrails
+version: "0.2.0"
+description: Confirmation, retry, and delegation guards for working on a Hermes fork
+manifest_version: 2
+provides_hooks: [pre_llm_call, pre_tool_call, post_tool_call, on_session_end, on_session_finalize]
