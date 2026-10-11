@@ -16,7 +16,9 @@ Wiring:
 from __future__ import annotations
 
 import logging
+import subprocess
 import threading
+from pathlib import Path
 
 logger = logging.getLogger("controller")
 
@@ -124,11 +126,48 @@ def pump(scope: str, *, worker_fn=None, review_fn=None, max_steps: int = 20) -> 
                            review_fn=review_fn, max_steps=max_steps)
 
 
+
+import subprocess as _sp
+import time as _time
+_last_pump = 0.0
+
+
+def _maybe_pump(scope: str) -> None:
+    """Fire-and-forget detached pump after a turn (spec §20 loop runner). Cooldown
+    prevents spawn thrash; the pump process itself no-ops when permission is off or
+    the queue is empty, so worker-session endings re-pumping is self-limiting."""
+    global _last_pump
+    with _lock_obj:
+        if _time.time() - _last_pump < 30:
+            return
+        _last_pump = _time.time()
+    try:
+        import sys
+        _sp.Popen([sys.executable, "-m", "controller.pump_cli", "--scope", scope],
+                  cwd=str(Path(__file__).resolve().parents[2]),
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                  start_new_session=True)
+    except Exception as exc:
+        logger.debug("controller pump spawn failed: %s", exc)
+
+
+def _on_post_llm_call(session_id: str = "", **kw):
+    if not _enabled():
+        return None
+    try:
+        scope = _scope_by_session.get(session_id) or _default_scope()
+        _maybe_pump(scope)
+    except Exception as exc:
+        logger.debug("controller post-llm pump check failed: %s", exc)
+    return None
+
+
 def register(ctx):
     global _ctx
     _ctx = ctx
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
+    ctx.register_hook("post_llm_call", _on_post_llm_call)
     if _enabled():
         logger.info("controller: managed autonomy enabled (flag on)")
         try:
