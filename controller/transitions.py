@@ -60,6 +60,10 @@ def _reviews_current(conn, task, kw) -> str | None:
         (task["task_id"],)).fetchall()
     steps = conn.execute("SELECT COUNT(*) c FROM ctl_step WHERE task_id=? AND checkpoint=1",
                          (task["task_id"],)).fetchone()["c"]
+    if steps == 0:
+        # §46: completion needs worker-done AND review — an empty plan has neither.
+        # (ready->verifying->completed used to vacuously pass with 0<0 in 11ms.)
+        return "empty plan: no checkpoint steps to have been done or reviewed"
     if len(rows) < steps:
         return f"missing reviews: {len(rows)}/{steps} checkpoint steps"
     for r in rows:
