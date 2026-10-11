@@ -30,7 +30,8 @@ def check(conn, *, scope: str, origin: str, task_id: str | None = None,
             return False, "unknown task"
         if task["state"] not in {"running"}:
             return False, f"task state {task['state']} does not authorize dispatch"
-        if task["contract_version"] != _run_contract(conn, task_id):
+        cur = _run_contract(conn, task_id)
+        if cur is not None and task["contract_version"] != cur:
             return False, "contract changed under the active run"
         if model.budget_exhausted(conn, task_id, "tool_calls"):
             return False, "budget exhausted"
