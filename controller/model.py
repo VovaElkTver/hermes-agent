@@ -57,7 +57,12 @@ def new_id(prefix: str) -> str:
 # ---- tasks ----------------------------------------------------------------
 
 def create_task(conn, *, owner: str, workdir: str, goal: str, project_id: str = "",
-                kanban_ref: str | None = None) -> str:
+                kanban_ref: str | None = None, position: str = "tail") -> str:
+    """position='head' jumps the queue (priority = max+1 among ready/running in this
+    workdir), 'tail' (default) queues FIFO at the back. Priority lives in the contract,
+    equal priorities keep strict FIFO (queue.py sorts by -priority, updated_at)."""
+    if position not in ("head", "tail"):
+        raise ValueError(f"unknown queue position: {position}")
     tid = new_id("task")
     now = time.time()
     conn.execute("INSERT INTO ctl_task VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -66,17 +71,53 @@ def create_task(conn, *, owner: str, workdir: str, goal: str, project_id: str = 
     conn.execute(
         "INSERT INTO ctl_contract_revision (task_id,version,change_class,fields,supersedes,agreed_at)"
         " VALUES (?,?,?,?,?,?)",
-        (tid, 1, "MATERIAL", json.dumps(_empty_contract(goal), ensure_ascii=False), None, None))
+        (tid, 1, "MATERIAL",
+         json.dumps(_empty_contract(goal, priority=_position_priority(conn, workdir, position)),
+                    ensure_ascii=False), None, None))
     conn.commit()
     return tid
 
 
-def _empty_contract(goal: str) -> dict:
-    return {"goal": goal, "acceptance": [], "decisions": [], "allowed_actions": [],
+def _position_priority(conn, workdir: str, position: str) -> float:
+    """head = one above every live task in the scope; tail = one below (keeps FIFO at 0
+    for the common case since default priority is 0)."""
+    row = conn.execute(
+        "SELECT MIN(CAST(json_extract(fields,'$.priority') AS REAL)) lo,"
+        " MAX(CAST(json_extract(fields,'$.priority') AS REAL)) hi"
+        " FROM ctl_task t JOIN ctl_contract_revision c"
+        "   ON c.task_id=t.task_id AND c.version=t.contract_version"
+        " WHERE t.workdir=? AND t.state IN ('ready','running')",
+        (str(Path(workdir).resolve()),)).fetchone()
+    if position == "head":
+        return (row["hi"] or 0) + 1
+    lo = row["lo"]
+    return (lo - 1) if lo is not None and lo < 0 else 0.0
+
+
+def _empty_contract(goal: str, priority: float = 0.0) -> dict:
+    return {"goal": goal, "priority": priority, "acceptance": [], "decisions": [], "allowed_actions": [],
             "approval_required": [], "restrictions": [], "facts": [], "hypotheses": [],
             "proposals": [], "open_questions": [], "input_artifacts": [], "dependencies": [],
             "start_conditions": [], "budgets": {}, "stop_conditions": [],
             "reclassification_rules": [], "notify_channel": ""}
+
+
+def set_priority(conn, task_id: str, *, head: bool) -> None:
+    """Move a task in its scope's queue via contract priority (editorial revision —
+    no re-agreement). head=above all live tasks, tail=min-1 (keeps FIFO below)."""
+    row = conn.execute("SELECT t.workdir, t.state FROM ctl_task t WHERE t.task_id=?",
+                       (task_id,)).fetchone()
+    if row is None:
+        raise LookupError(f"no such task: {task_id}")
+    if row["state"] not in ("draft", "ready"):
+        raise ValueError(f"cannot requeue a {row['state']} task")
+    p = _position_priority(conn, row["workdir"], "head" if head else "tail")
+    cur = conn.execute("SELECT fields FROM ctl_contract_revision WHERE task_id=? AND version=("
+                       "SELECT MAX(version) FROM ctl_contract_revision WHERE task_id=?)",
+                       (task_id, task_id)).fetchone()
+    fields = json.loads(cur["fields"] or "{}")
+    fields["priority"] = p
+    revise_contract(conn, task_id, fields, "EDITORIAL")
 
 
 def get_task(conn, task_id: str) -> sqlite3.Row | None:
