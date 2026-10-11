@@ -1,0 +1,40 @@
+---
+name: guardrails-protocol
+description: >-
+  Use when a tool call is blocked or asked to approve by fork-guardrails
+  (delegation block, approve gate, retry streak, force-push block). Explains
+  what each means and the correct way to proceed.
+version: 1.0.0
+author: hermes
+license: MIT
+---
+
+# Fork-guardrails protocol
+
+Policy guards apply to EVERY session (operator included) and speak through
+tool-result blocks/approval prompts. They are not suggestions.
+
+## Delegation blocked ("Delegation only when the user asks")
+
+`delegate_task` needs a fresh user ask (subagents / parallel agents /
+delegate) in the CURRENT turn — one successful dispatch consumes it. If the
+user said "do not use subagents", that also revokes it. Correct move: do the
+work inline, or ask the user to authorize one delegation round.
+
+## Approval prompt before outbound actions
+
+`git push`, `gh pr create/merge`, releases, `docker/twine/npm publish`,
+recursive `rm` return an approval gate: confirm with the user (or /approve),
+never re-run hoping it passes silently. `git push -f` / `+main` to
+main/master is blocked outright — `--force-with-lease` is the allowed form.
+
+## Same call failed 3 times
+
+Identical failing calls are blocked per turn. A plugin `blocked` status does
+not count toward the streak; a success clears it. Change approach or ask —
+do not retry the same arguments a fourth time.
+
+## Date context
+
+Each turn carries "Current date: ..." in your context — verify post-cutoff
+facts with tools instead of trusting memory.
