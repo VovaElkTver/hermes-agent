@@ -106,6 +106,24 @@ def _on_post_tool_call(tool_name: str = "", args: dict | None = None, task_id: s
     return None
 
 
+
+def pump(scope: str, *, worker_fn=None, review_fn=None, max_steps: int = 20) -> list[dict]:
+    """Drive the autonomous cycle for one scope (queue + loop). The engine is pure and
+    tested; worker_fn is host-provided (headless executor or delegate dispatch) and
+    review_fn defaults to the supervisor checkpoint. Safe to call from cron or a
+    completion watcher: permission is re-checked at dispatch, so a paused queue no-ops."""
+    from controller import loop as _loop
+    if worker_fn is None:
+        def worker_fn(run, task, step):
+            return {"status": "failed", "artifacts": [],
+                    "error": "no worker bound (increment-2 binding PR pending)"}
+    if review_fn is None:
+        review_fn = lambda run, step, arts: {"verdict": "needs_human",
+                                             "detail": "no reviewer bound"}
+    return _loop.run_cycle(_db(), scope=scope, worker_fn=worker_fn,
+                           review_fn=review_fn, max_steps=max_steps)
+
+
 def register(ctx):
     global _ctx
     _ctx = ctx
