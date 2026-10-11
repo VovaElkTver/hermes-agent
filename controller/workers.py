@@ -99,7 +99,8 @@ def make_review(conn, *, judge_cfg: dict | None = None):
             return {"verdict": "needs_human", "detail": "judge not configured"}
         try:
             from plugins.supervisor.judge import review as _j
-            hist = [{"role": "assistant", "content": tail[:8000]}]
+            hist = [{"tool": "worker", "status": str(artifacts[0].get("returncode")),
+                     "args": step.get("title", ""), "result": tail[:8000]}] if artifacts else []
             v = _j(judge_cfg, step.get("title", "step"), hist)
             verdict = v.get("verdict", "revise")
             # judge.review is fail-OPEN by design (advisory checkpoint); completion needs
