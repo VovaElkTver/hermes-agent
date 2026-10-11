@@ -2303,6 +2303,20 @@ class MatrixAdapter(BasePlatformAdapter):
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
         if msg_event is None:
             return
+        # Caption-merge: a plain text from a sender with held media IS the accompaniment —
+        # it joins the held batch and fires the flush now, instead of becoming its own turn.
+        if self._media_hold_seconds > 0 and msg_event.message_type == MessageType.TEXT:
+            held = self._media_batches.pop((room_id, sender), None)
+            if held is not None:
+                task = held.get("task")
+                if task and not task.done():
+                    task.cancel()
+                held["events"].append(msg_event)
+                events = held["events"]
+                merged = events[0] if len(events) == 1 else self._merge_media_events(events)
+                await self._maybe_wait_llm_delay(room_id)
+                await self.handle_message(merged)
+                return
         if msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(msg_event)
         else:
@@ -2392,21 +2406,22 @@ class MatrixAdapter(BasePlatformAdapter):
         """Put a media MessageEvent into its (room, sender) hold bucket and arm the flusher."""
         key = (msg_event.source.chat_id, msg_event.user_id or "")
         now = time.time()
-        batch = self._media_batches.get(key)
-        if batch is None:
-            batch = {"events": [], "opened": now, "deadline": now + self._media_hold_cap_seconds,
-                     "task": None}
-            self._media_batches[key] = batch
-        batch["events"].append(msg_event)
         # Typing active → the accompaniment is being typed: slide the whole window forward.
         sliding = self._media_hold_seconds if not self._typing_active(*key) else min(
             max(self._media_hold_seconds * 2, 1.5), self._media_hold_cap_seconds)
-        # Never past the absolute cap measured from batch open (worst case, a batch flushes).
-        batch["deadline"] = min(max(now + sliding, batch["deadline"]),
-                                batch["opened"] + self._media_hold_cap_seconds)
+        batch = self._media_batches.get(key)
+        if batch is None:
+            batch = {"events": [], "opened": now, "deadline": now + sliding, "task": None}
+            self._media_batches[key] = batch
+        else:
+            # Deadlines only extend (each new share / typing refresh widens the wait), but
+            # never past the absolute cap measured from batch open (worst case, flushes).
+            batch["deadline"] = min(max(now + sliding, batch["deadline"]),
+                                    batch["opened"] + self._media_hold_cap_seconds)
+        batch["events"].append(msg_event)
         if batch["task"] is None or batch["task"].done():
-            loop_delay = batch["deadline"] - now
-            batch["task"] = asyncio.create_task(self._flush_media_batch_after(key, loop_delay))
+            batch["task"] = asyncio.create_task(
+                self._flush_media_batch_after(key, batch["deadline"] - now))
 
     async def _flush_media_batch_after(self, key: tuple[str, str], delay: float) -> None:
         try:
@@ -2455,6 +2470,19 @@ class MatrixAdapter(BasePlatformAdapter):
         for uid in user_ids:
             if uid and uid != self_:
                 self._typing_extend(room_id, uid)
+                # The accompaniment of held media is being typed RIGHT NOW: push the pending
+                # batch's deadline forward (bounded by its hard cap) and re-arm the flusher.
+                key = (room_id, uid)
+                batch = self._media_batches.get(key)
+                if batch is not None:
+                    # Typing seen → hold to the hard cap: a caption takes seconds to write and
+                    # the coarse heartbeat (≤ every ~25-30s) cannot refine the deadline further.
+                    batch["deadline"] = batch["opened"] + self._media_hold_cap_seconds
+                    task = batch.get("task")
+                    if task and not task.done():
+                        task.cancel()
+                    batch["task"] = asyncio.create_task(
+                        self._flush_media_batch_after(key, batch["deadline"] - time.time()))
                 logger.debug("Matrix: %s is typing in %s (media hold may extend)", uid, room_id)
 
 

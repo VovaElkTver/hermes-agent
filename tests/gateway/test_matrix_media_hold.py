@@ -136,6 +136,54 @@ class TestHoldWindow:
         assert merged.media_urls == ["/tmp/a.png", "/tmp/b.png"]
         assert "вот лог" in merged.text
 
+    def test_caption_text_joins_held_batch(self):
+        """A text after held media (within the window) is the accompaniment: one merged turn."""
+        ad = self._adapter_with_hold(hold=5.0)
+        dispatched = []
+
+        async def scenario():
+            async def handle(msg):
+                dispatched.append(msg)
+            ad.handle_message = handle
+            ad._maybe_wait_llm_delay = lambda *a, **k: _noop_coro()
+            ad._hold_for_batch(_event(text="shot.jpg", urls=["/tmp/a.png"]))
+            # Simulate the caption arriving as a text event while the batch is still held:
+            ev = _event(text="вот дежурный лог")
+            key = ("!room:x", "@vovak:example.org")
+            held = ad._media_batches.pop(key)
+            if held["task"] and not held["task"].done():
+                held["task"].cancel()
+            held["events"].append(ev)
+            merged = type(ad)._merge_media_events(held["events"])
+            await ad.handle_message(merged)
+
+        asyncio.run(scenario())
+        assert len(dispatched) == 1
+        assert dispatched[0].media_urls == ["/tmp/a.png"]
+        assert "дежурный лог" in dispatched[0].text
+
+    def test_typing_extends_pending_batch_to_cap(self):
+        ad = self._adapter_with_hold(hold=1.5, cap=8.0)
+
+        async def scenario():
+            ad.handle_message = lambda m: _noop_coro()
+            ad._maybe_wait_llm_delay = lambda *a, **k: _noop_coro()
+            ev = _event(urls=["/tmp/a.png"])
+            ad._hold_for_batch(ev)
+            key = ("!room:x", "@vovak:example.org")
+            near = ad._media_batches[key]["opened"] + 1.5
+            assert abs(ad._media_batches[key]["deadline"] - near) < 0.1
+
+            class TypingEv:
+                room_id = "!room:x"
+                class content:
+                    user_ids = ["@vovak:example.org"]
+            await ad._on_typing(TypingEv())
+            # Extended to the hard cap (opened+8), not the old 1.5s deadline
+            assert ad._media_batches[key]["deadline"] >= near + 6.0
+
+        asyncio.run(scenario())
+
     def test_merge_joins_captions_and_attachments(self):
         from plugins.platforms.matrix.adapter import MatrixAdapter
         e1 = _event(urls=["/tmp/a.png"])
