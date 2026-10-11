@@ -42,6 +42,19 @@ def test_worker_runs_fake_bin_and_reports_artifacts(env):
     assert res["artifacts"][0]["returncode"] == 0
 
 
+def test_worker_passes_in_workdir_regression(env):
+    """PR#13 review finding: bug 1 regressed silently — the fake bin must SEE --in <wd>."""
+    c, wd, fake = env
+    tid, st = _task(c, wd)
+    res = make_worker(c, hermes_bin=fake, timeout_s=60)(
+        {"run_id": "r"}, {"task_id": tid, "workdir": wd, "goal": "X"},
+        {"step_id": st, "kind": "impl", "title": "code"})
+    tail = res["artifacts"][0]["stdout_tail"]
+    toks = tail.split()
+    assert "--in" in toks, "--in flag missing from worker argv"
+    assert wd in toks, "--in must receive the task workdir"
+
+
 def test_worker_nonzero_exit_is_failed(env, tmp_path):
     c, wd, _ = env
     bad = tmp_path / "hermes-bad"
@@ -69,6 +82,44 @@ def test_review_fail_closed_on_judge_error(env, monkeypatch):
     rv = make_review(c, judge_cfg={"model": "x"})
     out = rv({"run_id": "r"}, {"step_id": "s"}, [{"stdout_tail": "ok", "returncode": 0}])
     assert out["verdict"] == "needs_human" and "unavailable" in out["detail"]
+
+
+def test_review_fail_closed_on_failopen_judge_pass(env, monkeypatch):
+    """judge.review fails OPEN for checkpoints; completion must not inherit that."""
+    c, wd, _ = env
+    import plugins.supervisor.judge as j
+    monkeypatch.setattr(j, "review", lambda *a, **k: {
+        "verdict": "pass", "reason": "judge unavailable: KeyError", "instruction": ""})
+    rv = make_review(c, judge_cfg={"model": "x"})
+    out = rv({"run_id": "r"}, {"step_id": "s"}, [{"stdout_tail": "ok", "returncode": 0}])
+    assert out["verdict"] == "needs_human"
+
+
+def test_review_fail_closed_on_empty_completion(env):
+    """Review finding hole A: HTTP alive but completion unparsable -> judge.py defaults
+    to pass; degraded flag must catch it (empty/garbage content, missing field)."""
+    import json, urllib.request
+    c, wd, _ = env
+
+    class Resp:
+        def __init__(self, payload): self._p = payload
+        def read(self): return json.dumps(self._p).encode()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    calls = iter([{"choices": [{"message": {"content": ""}}]},
+              {"choices": [{"message": {"content": ""}}]}])
+    orig = urllib.request.urlopen
+    urllib.request.urlopen = lambda *a, **k: Resp(next(calls))
+    try:
+        from plugins.supervisor.judge import review as jr
+        v = jr({"base_url": "http://x", "model": "m"}, "g", [])
+        assert v["verdict"] == "pass" and v["degraded"] is True
+        rv = make_review(c, judge_cfg={"base_url": "http://x"})
+        out = rv({"run_id": "r"}, {"step_id": "s"}, [{"stdout_tail": "x", "returncode": 0}])
+        assert out["verdict"] == "needs_human" and out["detail"].strip()
+    finally:
+        urllib.request.urlopen = orig
 
 
 def test_review_gate_rejects_pass_when_worker_failed(env, monkeypatch):

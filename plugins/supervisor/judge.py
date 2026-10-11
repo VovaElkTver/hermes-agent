@@ -49,7 +49,7 @@ def build_messages(goal: str, history: list[dict[str, Any]], max_chars: int) -> 
     return [{"role": "system", "content": JUDGE_SYSTEM}, {"role": "user", "content": user}]
 
 
-def review(cfg: dict, goal: str, history: list[dict[str, Any]]) -> dict[str, str]:
+def review(cfg: dict, goal: str, history: list[dict[str, Any]]) -> dict[str, Any]:
     """Blocking HTTP call; run inside an executor. Fails open to 'pass' on any error."""
     try:
         url = cfg.get("base_url", "http://127.0.0.1:8000/v1").rstrip("/") + "/chat/completions"
@@ -70,12 +70,20 @@ def review(cfg: dict, goal: str, history: list[dict[str, Any]]) -> dict[str, str
         with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 20))) as resp:
             content = json.loads(resp.read())["choices"][0]["message"]["content"] or ""
         m = re.search(r"\{.*\}", content, re.S)
+        parsed = bool(m)
         verdict = json.loads(m.group(0)) if m else {}
         v = str(verdict.get("verdict", "pass")).lower()
+        whitelisted = v in ("pass", "revise", "halt")
         return {
-            "verdict": v if v in ("pass", "revise", "halt") else "pass",
+            "verdict": v if whitelisted else "pass",
             "reason": str(verdict.get("reason", ""))[:500],
             "instruction": str(verdict.get("instruction", ""))[:800],
+            # machine-readable degradation flag (wording in `reason` is NOT a contract):
+            # unparsable/empty completion, missing verdict field, or a verdict the model
+            # put outside the whitelist. Advisory checkpoint callers may ignore it;
+            # hard consumers (controller completion) must not.
+            "degraded": not parsed or "verdict" not in verdict or not whitelisted,
         }
     except Exception as exc:  # fail open: the judge is advisory, rule triggers are the hard gate
-        return {"verdict": "pass", "reason": f"judge unavailable: {type(exc).__name__}", "instruction": ""}
+        return {"verdict": "pass", "reason": f"judge unavailable: {type(exc).__name__}",
+                "instruction": "", "degraded": True}
