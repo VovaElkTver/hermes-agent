@@ -41,7 +41,7 @@ def build_messages(goal: str, history: list[dict[str, Any]], max_chars: int) -> 
     lines = []
     for i, h in enumerate(history, 1):
         lines.append(
-            f"#{i} {h['tool']} status={h.get('status', '')}\n"
+            f"#{i} {h.get('tool', '?')} status={h.get('status', '')}\n"
             f"args: {_clip(h.get('args'), per_call // 3)}\n"
             f"result: {_clip(h.get('result'), per_call)}"
         )

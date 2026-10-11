@@ -55,6 +55,23 @@ def test_worker_passes_in_workdir_regression(env):
     assert wd in toks, "--in must receive the task workdir"
 
 
+def test_workers_history_shape_reaches_http(env, monkeypatch):
+    """PR#13 follow-up: make_review's history items lacked 'tool' -> build_messages
+    KeyError failed every LIVE judge call to needs_human regardless of endpoint state."""
+    import plugins.supervisor.judge as j
+    seen = {}
+    def fake(cfg, goal, history):
+        seen['history'] = history
+        return {"verdict": "pass", "reason": "fine", "instruction": "", "degraded": False}
+    monkeypatch.setattr(j, "review", fake)
+    c, wd, _ = env
+    rv = make_review(c, judge_cfg={"model": "x"})
+    out = rv({"run_id": "r"}, {"step_id": "s", "title": "do"},
+             [{"stdout_tail": "tail", "returncode": 0}])
+    assert out["verdict"] == "pass"
+    assert seen["history"][0]["tool"] == "worker" and "tail" in seen["history"][0]["result"]
+
+
 def test_worker_nonzero_exit_is_failed(env, tmp_path):
     c, wd, _ = env
     bad = tmp_path / "hermes-bad"
@@ -108,7 +125,7 @@ def test_review_fail_closed_on_empty_completion(env):
         def __exit__(self, *a): return False
 
     calls = iter([{"choices": [{"message": {"content": ""}}]},
-              {"choices": [{"message": {"content": ""}}]}])
+                  {"choices": [{"message": {"content": ""}}]}])
     orig = urllib.request.urlopen
     urllib.request.urlopen = lambda *a, **k: Resp(next(calls))
     try:
@@ -116,8 +133,10 @@ def test_review_fail_closed_on_empty_completion(env):
         v = jr({"base_url": "http://x", "model": "m"}, "g", [])
         assert v["verdict"] == "pass" and v["degraded"] is True
         rv = make_review(c, judge_cfg={"base_url": "http://x"})
-        out = rv({"run_id": "r"}, {"step_id": "s"}, [{"stdout_tail": "x", "returncode": 0}])
-        assert out["verdict"] == "needs_human" and out["detail"].strip()
+        out = rv({"run_id": "r"}, {"step_id": "s", "title": "t"},
+                 [{"stdout_tail": "x", "returncode": 0}])
+        # must be degraded-flag path, NOT the exception path (KeyError regression)
+        assert out["verdict"] == "needs_human" and "judge unavailable" not in out["detail"]
     finally:
         urllib.request.urlopen = orig
 
