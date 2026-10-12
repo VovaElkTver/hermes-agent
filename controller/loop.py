@@ -34,6 +34,14 @@ def run_cycle(conn, *, scope: str, worker_fn, review_fn, max_steps: int = 50) ->
         if not candidates:
             log.append({"stop": "queue empty"})
             return log
+        # one run at a time per task: a task whose run is still open (an external
+        # worker is mid-step, or a crashed run not yet reconciled) is never given a
+        # second concurrent run — step over it and take the next candidate. The open
+        # run is left untouched (no mid-run kill).
+        candidates = [t for t in candidates if not Q.has_open_run(conn, t["task_id"])]
+        if not candidates:
+            log.append({"stop": "all candidates have an open run"})
+            return log
         task = candidates[0]
         if task["state"] != "running":
             # entering running is itself guarded (contract/permission/budgets)

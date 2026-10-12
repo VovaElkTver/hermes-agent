@@ -211,3 +211,112 @@ def test_stale_run_finished_does_not_advance(env):
     model.emit(c, kind="run_finished", origin="system", task_id=tid,
                idempotency_key=f"{rid}:f")
     assert model.get_task(c, tid)["state"] == "ready"   # nothing advanced
+
+
+# ---- reselect-after-step (variant A of the queue-preemption decision) --------
+
+def test_reselect_interleaves_by_priority(env):
+    """Two fresh equal-priority ready tasks interleave per-step: every selection is
+    pure (-priority, updated_at) over ready+running, and each dispatch refreshes the
+    winner's claim (ready->running transition), so the next selection turns to the
+    other task — a task continues only while nothing outranks it."""
+    c, wd = env
+    a = mk(c, wd, "A", priority=0)
+    b = mk(c, wd, "B", priority=0)
+    model.add_step(c, a, "impl", "a1")
+    model.add_step(c, a, "impl", "a2")
+    model.add_step(c, b, "impl", "b1")
+    model.add_step(c, b, "impl", "b2")
+    model.set_permission(c, wd, enabled=True, granted_via="user-command")
+    order = []
+    loop.run_cycle(c, scope=wd, worker_fn=lambda r, t, s: (order.append(s["title"]),
+                                                           ok_worker(r, t, s))[1],
+                   review_fn=pass_review)
+    # strict round-robin: b never waits for a's whole plan (old code: running-first)
+    assert order == ["a1", "b1", "a2", "b2"], order
+    for t in (a, b):
+        assert model.get_task(c, t)["state"] == "completed"
+
+
+def test_higher_priority_drains_before_lower(env):
+    """With distinct priorities each reselection repeats the -priority winner until its
+    plan (and its completion) is exhausted — interleaving only breaks ties."""
+    c, wd = env
+    a = mk(c, wd, "A", priority=0)
+    b = mk(c, wd, "B", priority=5)
+    model.add_step(c, a, "impl", "a1")
+    model.add_step(c, b, "impl", "b1")
+    model.add_step(c, b, "impl", "b2")
+    model.set_permission(c, wd, enabled=True, granted_via="user-command")
+    order = []
+    loop.run_cycle(c, scope=wd, worker_fn=lambda r, t, s: (order.append(s["title"]),
+                                                           ok_worker(r, t, s))[1],
+                   review_fn=pass_review)
+    assert order == ["b1", "b2", "a1"], order
+    assert model.get_task(c, b)["state"] == "completed"
+    assert model.get_task(c, a)["state"] == "completed"
+
+
+def test_head_requeue_overtakes_running_on_next_selection(env):
+    """'head' requeue of a READY task beats the RUNNING one on the very next
+    selection; the running step itself is never cut short."""
+    c, wd = env
+    r = mk(c, wd, "R", priority=0)
+    model.add_step(c, r, "impl", "r1")
+    model.add_step(c, r, "impl", "r2")
+    model.set_permission(c, wd, enabled=True, granted_via="user-command")
+    order = []
+    worker = lambda run, t, s: (order.append(("run", s["title"])), ok_worker(run, t, s))[1]
+    loop.run_cycle(c, scope=wd, worker_fn=worker, review_fn=pass_review, max_steps=1)
+    assert order == [("run", "r1")]
+    assert model.get_task(c, r)["state"] == "running"
+    # operator puts a fresh task at the head of the queue while r is mid-task
+    h = model.create_task(c, owner="o", workdir=wd, goal="H", position="head")
+    c.execute("UPDATE ctl_task SET state='ready' WHERE task_id=?", (h,)); c.commit()
+    model.add_step(c, h, "impl", "h1")
+    model.agree_contract(c, h)
+    assert Q.eligible(c, wd)[0]["task_id"] == h          # overtakes the running task
+    loop.run_cycle(c, scope=wd, worker_fn=worker, review_fn=pass_review, max_steps=1)
+    assert order == [("run", "r1"), ("run", "h1")]       # h1 ran before r2
+    # head task has no steps left -> one iteration completes it, then r resumes
+    loop.run_cycle(c, scope=wd, worker_fn=worker, review_fn=pass_review, max_steps=4)
+    assert order == [("run", "r1"), ("run", "h1"), ("run", "r2")]
+    assert model.get_task(c, h)["state"] == "completed"
+    assert model.get_task(c, r)["state"] == "completed"
+
+
+def test_task_with_open_run_never_dispatched_twice(env):
+    """Resume-in-flight safety: a task whose run row is not terminal yet gets no
+    second concurrent run — the loop skips it (others proceed) until it closes."""
+    c, wd = env
+    p = model.set_permission(c, wd, enabled=True, granted_via="user-command")
+    stalled = mk(c, wd, "stalled", priority=9)      # highest rank, external worker busy
+    model.add_step(c, stalled, "impl", "s1")
+    other = mk(c, wd, "other", priority=0)
+    model.add_step(c, other, "impl", "o1")
+    # simulate an unfinished run left by an earlier process (crash / external worker)
+    rid = model.start_run(c, task_id=stalled, step_id="nonexistent", contract_version=1,
+                          execution_epoch=p["execution_epoch"])
+    c.execute("UPDATE ctl_task SET state='running' WHERE task_id=?", (stalled,)); c.commit()
+    assert Q.has_open_run(c, stalled)
+
+    calls = []
+    def counting_worker(run, t, s):
+        calls.append(s["title"])
+        return ok_worker(run, t, s)
+    log = loop.run_cycle(c, scope=wd, worker_fn=counting_worker, review_fn=pass_review)
+    # 'stalled' was skipped, 'other' proceeded, and the open run row is untouched
+    assert calls == ["o1"], log
+    n = c.execute("SELECT COUNT(*) n FROM ctl_run WHERE task_id=?", (stalled,)).fetchone()["n"]
+    assert n == 1                                   # no second concurrent run
+    assert c.execute("SELECT run_status FROM ctl_run WHERE run_id=?",
+                     (rid,)).fetchone()["run_status"] == "starting"
+    # when nothing else is serviceable the loop stops cleanly on the open-run filter
+    assert log[-1] == {"stop": "all candidates have an open run"}
+    # once the run closes, the task is serviceable again
+    model.set_run_status(c, rid, "finished")
+    assert not Q.has_open_run(c, stalled)
+    calls.clear()
+    loop.run_cycle(c, scope=wd, worker_fn=counting_worker, review_fn=pass_review)
+    assert calls == ["s1"], calls
+
