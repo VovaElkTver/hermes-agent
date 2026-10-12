@@ -78,6 +78,35 @@ def test_requeue_commands_route_from_user_only():
                               origin="tool", sender_ok=True) is None  # docs can't requeue
 
 
+def test_latest_review_per_step_wins_over_stale_needs_human(env):
+    """Dogfood 12.10: a retried step carried needs_human rows from dead attempts plus a
+    fresh pass; verifying->completed scanned ALL rows and refused forever."""
+    from controller import loop, model
+    c, wd = env
+    tid = model.create_task(c, owner="o", workdir=wd, goal="g")
+    c.execute("UPDATE ctl_task SET state='ready' WHERE task_id=?", (tid,)); c.commit()
+    model.agree_contract(c, tid)
+    st = model.add_step(c, tid, "impl", "do")
+    model.set_permission(c, wd, enabled=True, granted_via="user-command")
+    calls = {"n": 0}
+    def worker(run, task, step):
+        calls["n"] += 1
+        return {"status": "finished", "artifacts": [{"stdout_tail": f"try{calls['n']}", "returncode": 0}]}
+    def review(run, step, arts):
+        # first attempt: judge degraded; second attempt: real pass
+        v = "needs_human" if calls["n"] == 1 else "pass"
+        return {"verdict": v, "detail": "stale" if v == "needs_human" else "fresh pass"}
+    log = loop.run_cycle(c, scope=wd, worker_fn=worker, review_fn=review, max_steps=10)
+    state = c.execute("SELECT state FROM ctl_task WHERE task_id=?", (tid,)).fetchone()["state"]
+    # attempt 1 -> needs_human (loop returns); operator path: back to ready, then completes
+    assert state == "needs_human", (log, state)
+    from controller import transitions
+    transitions.transition(c, tid, "ready", basis="test: operator resume")
+    log = loop.run_cycle(c, scope=wd, worker_fn=worker, review_fn=review, max_steps=10)
+    state = c.execute("SELECT state FROM ctl_task WHERE task_id=?", (tid,)).fetchone()["state"]
+    assert state == "completed", (log, state)
+
+
 def test_empty_plan_blocks_instead_of_vacuous_complete(env):
     """PR dogfood: task with ZERO steps used to hit completed in 11ms (0<0 False in
     _reviews_current). §46 needs worker-done + review; an empty plan has neither."""
