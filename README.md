@@ -3,6 +3,16 @@
 </p>
 
 # Hermes Agent ☤
+> [!IMPORTANT]
+> **Hermes Autonomous** — a fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)
+> with managed autonomy: a supervisor gate for delegated workers, fork guardrails, and a
+> deterministic task controller (queue, headless workers, live judge review, budgets,
+> needs_human escalation). Mechanics: [`docs/controller.md`](docs/controller.md).
+>
+> One-line install of THIS fork — Linux/WSL:
+> `bash <(curl -fsSL https://raw.githubusercontent.com/VovaElkTver/hermes-autonomous-agent/main/fork-install.sh)`
+> Windows: `iwr -useb https://raw.githubusercontent.com/VovaElkTver/hermes-autonomous-agent/main/fork-install.ps1 | iex`
+
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
 </p>
