@@ -22,9 +22,45 @@ import subprocess
 import tempfile
 import time
 
+# Windows-only spawn flags (subprocess exposes them on nt only).
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+DETACHED_PROCESS = 0x00000008
+
+
+def _spawn_kwargs() -> dict:
+    """Detached-spawn kwargs per OS. On POSIX start_new_session gives the worker
+    its own session so killpg can tree-kill it. On Windows start_new_session is
+    silently IGNORED by CPython, so the equivalent isolation is
+    CREATE_NEW_PROCESS_GROUP|DETACHED_PROCESS via creationflags."""
+    if os.name == "nt":
+        return {"creationflags": CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS}
+    return {"start_new_session": True}
+
+
+def _kill_tree(proc) -> None:
+    """Kill the timed-out worker and every grandchild still writing into the
+    workdir. POSIX: the spawn put it in its own session -> killpg. Windows: no
+    killpg/getpgid exist at all (AttributeError would escape the except) ->
+    taskkill /T /F walks the process tree."""
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, AttributeError):
+        pass
+
 
 def make_worker(conn, *, timeout_s: int = 1800,
                 hermes_bin: str | None = None, extra_env: dict | None = None):
+    # Resolve the OS branch once at binding time: the host OS cannot change
+    # mid-run, and the tests that fake os.name='nt' must not have it leak into
+    # stdlib internals (tempfile checks os.name too).
+    spawn_kwargs = _spawn_kwargs()
     def worker_fn(run, task, step):
         brief = _brief(conn, task, step)
         qf = tempfile.NamedTemporaryFile("w", suffix=".md", delete=False,
@@ -46,17 +82,15 @@ def make_worker(conn, *, timeout_s: int = 1800,
                  "--run-budget", str(timeout_s)],
                 cwd=task["workdir"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace", env=env,
-                start_new_session=True)
+                **spawn_kwargs)
             try:
                 out, err = proc.communicate(timeout=timeout_s + 60)
                 returncode = proc.returncode
             except subprocess.TimeoutExpired:
-                # direct child + every tool grandchild share this new session:
-                # killpg guarantees nothing keeps writing into the workdir after failure
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
+                # direct child + every tool grandchild share this detached group:
+                # tree-kill guarantees nothing keeps writing into the workdir after
+                # failure (killpg on POSIX, taskkill /T /F on Windows)
+                _kill_tree(proc)
                 proc.communicate()
                 return {"status": "failed", "artifacts": [], "error": "worker timeout"}
             artifacts = [{"stdout_tail": (out or "")[-2000:],
