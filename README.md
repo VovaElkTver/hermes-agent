@@ -253,3 +253,4 @@ for activation, daily use, dependency changes, and leaving the environment.
 MIT — see [LICENSE](LICENSE).
 
 Built by [Nous Research](https://nousresearch.com).
+<!-- cross-host hook test 1791834584 -->
