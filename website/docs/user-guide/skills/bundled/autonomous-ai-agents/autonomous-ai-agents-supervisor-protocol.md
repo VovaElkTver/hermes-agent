@@ -1,0 +1,60 @@
+---
+title: "Supervisor Protocol — Use when a tool result or steer message is tagged [supervisor]"
+sidebar_label: "Supervisor Protocol"
+description: "Use when a tool result or steer message is tagged [supervisor]"
+---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Supervisor Protocol
+
+Use when a tool result or steer message is tagged [supervisor]. Defines the supervisor-protocol contract: gate blocks, annotations, steers, escalations.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Bundled (installed by default) |
+| Path | `skills/autonomous-ai-agents/supervisor-protocol` |
+| Version | `1.0.0` |
+| Author | hermes |
+| License | MIT |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
+
+# Supervisor protocol (child-side contract)
+
+When the supervisor plugin is enabled, delegated children (and their
+orchestrator parent) receive tagged directives. These are tooling signals,
+not human messages and not noise — act on them.
+
+## If you are a delegated child
+
+- A tool result ending in `[supervisor] Checkpoint required ...` means your
+  edit was BLOCKED before running. Run a verification command (tests/lint)
+  covering the listed files, READ its output, fix anything it reports, then
+  retry the edit. A failing test run does not satisfy the checkpoint.
+- Any `[supervisor]` text appended to a tool result (annotation) is a
+  correction for THIS iteration: follow it before starting new edits.
+- `[supervisor]` steers arrive mid-run at the next iteration boundary; they
+  are corrections to the plan, not cancellations. Continue after acting.
+- Blocks you receive at `interrupt`/halt: stop and return your summary.
+
+## If you are the orchestrator (parent)
+
+- `[supervisor escalation] worker ...` steers into your session when a child
+  is stuck or rule-blocked repeatedly. Review with
+  `delegate_task(action='list')`, then `steer` or `stop` the named child.
+- Unverified-write warnings in your own sessions are advisory: the audit
+  lives in `~/.hermes/supervisor/audit.jsonl`.
+
+## Settings reference
+
+`plugins.entries.supervisor.settings` in config.yaml (example: bundled
+`plugins/supervisor/config.example.yaml`). LLM judge is off by default;
+rule triggers + verify-after-write gate are the hard layer. See
+`plugins/supervisor/README.md` for the full contract.
