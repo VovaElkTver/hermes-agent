@@ -72,6 +72,30 @@ def test_workers_history_shape_reaches_http(env, monkeypatch):
     assert seen["history"][0]["tool"] == "worker" and "tail" in seen["history"][0]["result"]
 
 
+def test_review_fail_closed_on_reasoning_truncation(env):
+    """Dogfood 12.10: reasoning judge on 8012 spent max_tokens on hidden reasoning ->
+    finish_reason='length', content='' -> empty-completion degraded must fire (was the
+    silent needs_human loop that stalled both live tasks)."""
+    import json, urllib.request
+    c, wd, _ = env
+
+    class Resp:
+        def read(self): return json.dumps(
+            {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}).encode()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    orig = urllib.request.urlopen
+    urllib.request.urlopen = lambda *a, **k: Resp()
+    try:
+        from plugins.supervisor.judge import review as jr
+        v = jr({"base_url": "http://x", "model": "m"}, "g",
+               [{"tool": "w", "status": "0", "args": "a", "result": "r"}])
+        assert v["verdict"] == "pass" and v["degraded"] is True
+    finally:
+        urllib.request.urlopen = orig
+
+
 def test_worker_nonzero_exit_is_failed(env, tmp_path):
     c, wd, _ = env
     bad = tmp_path / "hermes-bad"

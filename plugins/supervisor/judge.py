@@ -58,7 +58,10 @@ def review(cfg: dict, goal: str, history: list[dict[str, Any]]) -> dict[str, Any
             "model": cfg.get("model", "judge"),
             "messages": build_messages(goal, history, int(cfg.get("max_context_chars", 12000))),
             "temperature": 0,
-            "max_tokens": int(cfg.get("max_tokens", 300)),
+            # reasoning-model judges spend max_tokens on hidden reasoning BEFORE the
+            # JSON answer lands in content; 300 truncated to content='' (finish=length)
+            # and every live review degraded. Budget must cover reasoning + answer.
+            "max_tokens": int(cfg.get("max_tokens", 4000)),
         }
         if cfg.get("json_mode", True):
             body["response_format"] = {"type": "json_object"}
@@ -68,9 +71,16 @@ def review(cfg: dict, goal: str, history: list[dict[str, Any]]) -> dict[str, Any
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
         )
         with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 20))) as resp:
-            content = json.loads(resp.read())["choices"][0]["message"]["content"] or ""
+            data = json.loads(resp.read())
+            ch0 = data["choices"][0]
+            content = ch0["message"]["content"] or ""
+            finish = ch0.get("finish_reason")
         m = re.search(r"\{.*\}", content, re.S)
         parsed = bool(m)
+        # reasoning-model judges spend max_tokens on hidden reasoning BEFORE the JSON
+        # answer lands in content: budget exhausted => finish_reason=length, content=''
+        # (dogfood 12.10: every live review degraded on the 8012 judge at the old default).
+        truncated = finish == "length"
         verdict = json.loads(m.group(0)) if m else {}
         v = str(verdict.get("verdict", "pass")).lower()
         whitelisted = v in ("pass", "revise", "halt")
@@ -82,7 +92,8 @@ def review(cfg: dict, goal: str, history: list[dict[str, Any]]) -> dict[str, Any
             # unparsable/empty completion, missing verdict field, or a verdict the model
             # put outside the whitelist. Advisory checkpoint callers may ignore it;
             # hard consumers (controller completion) must not.
-            "degraded": not parsed or "verdict" not in verdict or not whitelisted,
+            "degraded": (not parsed or "verdict" not in verdict or not whitelisted
+                         or truncated),
         }
     except Exception as exc:  # fail open: the judge is advisory, rule triggers are the hard gate
         return {"verdict": "pass", "reason": f"judge unavailable: {type(exc).__name__}",
