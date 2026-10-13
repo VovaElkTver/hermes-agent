@@ -1,7 +1,7 @@
 # ============================================================================
 # Hermes Agent (VovaElkTver fork) one-line installer for Windows.
 #
-#   iwr -useb https://raw.githubusercontent.com/VovaElkTver/hermes-agent/main/fork-install.ps1 | iex
+#   iwr -useb https://raw.githubusercontent.com/VovaElkTver/hermes-autonomous-agent/main/fork-install.ps1 | iex
 #
 # Clones the FORK into $env:LOCALAPPDATA\hermes\hermes-agent (or $env:HERMES_HOME)
 # and hands over to setup-hermes.ps1 for the real install. No setup logic here.
@@ -9,7 +9,7 @@
 # Env overrides: HERMES_FORK_URL, HERMES_FORK_BRANCH, HERMES_HOME, DRY_RUN=1
 # ============================================================================
 $ErrorActionPreference = "Stop"
-$ForkUrl  = if ($env:HERMES_FORK_URL)    { $env:HERMES_FORK_URL }    else { "https://github.com/VovaElkTver/hermes-agent" }
+$ForkUrl  = if ($env:HERMES_FORK_URL)    { $env:HERMES_FORK_URL }    else { "https://github.com/VovaElkTver/hermes-autonomous-agent" }
 $Branch   = if ($env:HERMES_FORK_BRANCH) { $env:HERMES_FORK_BRANCH } else { "main" }
 $Base     = if ($env:HERMES_HOME)        { $env:HERMES_HOME }        else { "$env:LOCALAPPDATA\hermes" }
 $Dest     = Join-Path $Base "hermes-agent"
@@ -22,7 +22,9 @@ function Invoke-Step([string]$label, [scriptblock]$body) {
 
 if (Test-Path (Join-Path $Dest ".git")) {
   $cur = (git -C $Dest remote get-url origin 2>$null)
-  if ($cur -and $cur -ne $ForkUrl) {
+  # Accept checkouts created before the 2026-10 rename (GitHub redirects them).
+  $curNorm = $cur -replace 'VovaElkTver/hermes-agent(?!-)', 'VovaElkTver/hermes-autonomous-agent'
+  if ($cur -and $curNorm -ne $ForkUrl) {
     Write-Host "existing checkout origin is: $cur`nexpected:                    $ForkUrl`nrefusing to touch it — remove/move $Dest or set HERMES_FORK_URL." -ForegroundColor Red
     exit 1
   }

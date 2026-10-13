@@ -2,7 +2,7 @@
 # ============================================================================
 # Hermes Agent (VovaElkTver fork) one-line installer.
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/VovaElkTver/hermes-agent/main/fork-install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/VovaElkTver/hermes-autonomous-agent/main/fork-install.sh)
 #
 # Clones the FORK (not upstream) into ~/.hermes/hermes-agent and hands over to
 # setup-hermes.sh, which owns all real installation (uv/pm/venv). This script
@@ -16,7 +16,7 @@
 # ============================================================================
 set -e
 
-FORK_URL="${HERMES_FORK_URL:-https://github.com/VovaElkTver/hermes-agent}"
+FORK_URL="${HERMES_FORK_URL:-https://github.com/VovaElkTver/hermes-autonomous-agent}"
 BRANCH="${HERMES_FORK_BRANCH:-main}"
 BASE="${HERMES_HOME:-$HOME/.hermes}"
 DEST="$BASE/hermes-agent"
@@ -26,7 +26,9 @@ run() { if [ "${DRY_RUN:-0}" = "1" ]; then say "[dry-run] $*"; else eval "$@"; f
 
 if [ -d "$DEST/.git" ]; then
   cur="$(git -C "$DEST" remote get-url origin 2>/dev/null || true)"
-  if [ "$cur" != "$FORK_URL" ] && [ "${DRY_RUN:-0}" != "1" ]; then
+  # Accept checkouts created before the 2026-10 rename (GitHub redirects them).
+  cur_norm="$(printf '%s' "$cur" | sed 's|VovaElkTver/hermes-agent\b|VovaElkTver/hermes-autonomous-agent|')"
+  if [ "$cur_norm" != "$FORK_URL" ] && [ "${DRY_RUN:-0}" != "1" ]; then
     say "existing checkout origin is: $cur"
     say "expected:                    $FORK_URL"
     say "refusing to touch it — remove/move $DEST or set HERMES_FORK_URL."

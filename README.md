@@ -49,7 +49,7 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenR
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
-For this fork's one-line install (Linux/WSL): `bash <(curl -fsSL https://raw.githubusercontent.com/VovaElkTver/hermes-agent/main/fork-install.sh)`; Windows: `iwr -useb https://raw.githubusercontent.com/VovaElkTver/hermes-agent/main/fork-install.ps1 | iex`
+For this fork's one-line install (Linux/WSL): `bash <(curl -fsSL https://raw.githubusercontent.com/VovaElkTver/hermes-autonomous-agent/main/fork-install.sh)`; Windows: `iwr -useb https://raw.githubusercontent.com/VovaElkTver/hermes-autonomous-agent/main/fork-install.ps1 | iex`
 ```
 
 ### Windows (native, PowerShell)
