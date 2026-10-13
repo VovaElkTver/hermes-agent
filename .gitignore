@@ -114,6 +114,8 @@ apps/desktop/electron/**/*.d.ts
 /log.txt
 /sqlite_leak_fix.png
 /*.png.bak
+*.bak-*
+*.py.bak*
 *.tar.gz
 *.tgz
 apps/shared/src/**/*.js
