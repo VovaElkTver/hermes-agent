@@ -129,6 +129,17 @@ gateway:
     branched_thread_one: "⑂ **{title}** yeni bir konuya dallandı ({count} mesaj kopyalandı)\nKonu: {thread}\nOrijinal: `{parent}` — bu sohbet onda kalır\nDal: `{new}`\nBu sohbette dallanmak için `/branch --here` kullanın."
     branched_thread_many: "⑂ **{title}** yeni bir konuya dallandı ({count} mesaj kopyalandı)\nKonu: {thread}\nOrijinal: `{parent}` — bu sohbet onda kalır\nDal: `{new}`\nBu sohbette dallanmak için `/branch --here` kullanın."
     thread_fallback: "Burada konu oluşturulamadı, bu yüzden dal bu sohbetin oturumunun yerini aldı."
+  fork:
+    created: "⑂ Çatallandı: **{title}** (tembel dal `{branch}`, `{parent}` ile geçmişi paylaşır)\nFork oturumu: `{new}`\nGeri birleştirmek için `/join {branch}`, tam kopya için `/branch`."
+    no_conversation: "Forklanacak bir şey yok — üst oturumda henüz mesaj yok."
+    create_failed: "Fork oluşturulamadı: {error}"
+  join:
+    none_active: "Bu oturumda etkin çatallama dalları yok. /fork ile bir tane başlatın."
+    not_found: "Böyle bir etkin dal yok: {arg}. Dalları listelemek için /join çalıştırın."
+    ambiguous: "Birden çok etkin dal var, birini belirtin: {branches}"
+    append_unavailable: "--append, dallanma noktasından sonraki üst kuyruk sıkıştırılmamış olduğu sürece mümkündür; {branch} için varsayılan iş-notu birleştirmesini kullanın."
+    joined: "✓ {branch} dalı birleştirildi ({strategy})."
+    db_unavailable: "Oturum veritabanı kullanılamıyor."
   commands:
     usage: "Kullanım: `/commands [page]`"
     skill_header: "⚡ **Skill Komutları**:"
@@ -1518,6 +1529,10 @@ slash:
     description: "Bu oturumu bir mesajlaşma platformuna devret (Telegram, Discord vb.)"
   branch:
     description: "Geçerli oturumu dallandır (Discord/Telegram/Slack/Matrix'te yeni konu; --here burada kalır)"
+  fork:
+    description: "Sohbeti paylaşılan geçmişli tembel bir dala çatalla (/join ile birleştir)"
+  join:
+    description: "Bir çatallama dalını bu oturuma geri birleştir (varsayılan: iş notu özeti)"
   worktree:
     description: "Yalıtılmış git worktree'lerini göster, listele, oluştur veya temizle"
   compress:

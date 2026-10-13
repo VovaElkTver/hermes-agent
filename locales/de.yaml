@@ -129,6 +129,17 @@ gateway:
     branched_thread_one: "⑂ Verzweigt zu **{title}** in einem neuen Thread ({count} Nachricht kopiert)\nThread: {thread}\nOriginal: `{parent}` — dieser Chat bleibt darauf\nZweig: `{new}`\nMit `/branch --here` stattdessen in diesem Chat verzweigen."
     branched_thread_many: "⑂ Verzweigt zu **{title}** in einem neuen Thread ({count} Nachrichten kopiert)\nThread: {thread}\nOriginal: `{parent}` — dieser Chat bleibt darauf\nZweig: `{new}`\nMit `/branch --here` stattdessen in diesem Chat verzweigen."
     thread_fallback: "Hier konnte kein Thread erstellt werden, daher hat der Zweig die Sitzung dieses Chats ersetzt."
+  fork:
+    created: "⑂ Fork erstellt: **{title}** (fauler Zweig `{branch}`, teilt den Verlauf mit `{parent}`)\nFork-Sitzung: `{new}`\nMit `/join {branch}` zurückführen, `/branch` für eine vollständige Kopie."
+    no_conversation: "Nichts zu forken — der Ursprung hat noch keine Nachrichten."
+    create_failed: "Fork konnte nicht erstellt werden: {error}"
+  join:
+    none_active: "Keine aktiven Fork-Zweige in dieser Sitzung. Starten Sie einen mit /fork."
+    not_found: "Kein solcher aktiver Zweig: {arg}. /join zeigt die Zweige."
+    ambiguous: "Mehrere aktive Zweige, nennen Sie einen: {branches}"
+    append_unavailable: "--append geht nur, solange der Elternschwanz nach dem Abzweig unkomprimiert ist; nutzen Sie für {branch} den Standard-Work-Note-Join."
+    joined: "✓ Zweig {branch} zusammengeführt ({strategy})."
+    db_unavailable: "Sitzungsdatenbank nicht verfügbar."
   commands:
     usage: "Verwendung: `/commands [page]`"
     skill_header: "⚡ **Skill-Befehle**:"
@@ -1518,6 +1529,10 @@ slash:
     description: "Diese Sitzung an eine Messaging-Plattform übergeben (Telegram, Discord usw.)"
   branch:
     description: "Aktuelle Sitzung verzweigen (neuer Thread auf Discord/Telegram/Slack/Matrix; --here bleibt hier)"
+  fork:
+    description: "Unterhaltung in faulenz Zweig mit geteilter Historie forken (mit /join zurückführen)"
+  join:
+    description: "Fork-Zweig zurück in diese Sitzung zusammenführen (Standard: Arbeitsnotiz-Zusammenfassung)"
   worktree:
     description: "Isolierte Git-Worktrees anzeigen, auflisten, erstellen oder bereinigen"
   compress:

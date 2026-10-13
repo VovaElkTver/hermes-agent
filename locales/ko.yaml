@@ -129,6 +129,17 @@ gateway:
     branched_thread_one: "⑂ 새 스레드에서 **{title}**(으)로 분기했습니다 ({count}개 메시지 복사)\n스레드: {thread}\n원본: `{parent}` — 이 채팅은 원본에 남습니다\n분기: `{new}`\n이 채팅에서 분기하려면 `/branch --here`를 사용하세요."
     branched_thread_many: "⑂ 새 스레드에서 **{title}**(으)로 분기했습니다 ({count}개 메시지 복사)\n스레드: {thread}\n원본: `{parent}` — 이 채팅은 원본에 남습니다\n분기: `{new}`\n이 채팅에서 분기하려면 `/branch --here`를 사용하세요."
     thread_fallback: "여기서는 스레드를 만들 수 없어 분기가 이 채팅의 세션을 대체했습니다."
+  fork:
+    created: "⑂ 포크 생성: **{title}** (지연 브랜치 `{branch}`, `{parent}`와 기록 공유)\n포크 세션: `{new}`\n`/join {branch}`으로 병합, `/branch`로 전체 복사."
+    no_conversation: "포할 내용이 없습니다 — 부모 세션에 아직 메시지가 없습니다."
+    create_failed: "포크를 만들지 못했습니다: {error}"
+  join:
+    none_active: "이 세션에 활성 포크 브랜치가 없습니다. /fork로 시작하세요."
+    not_found: "해당 활성 브랜치가 없습니다: {arg}. /join으로 브랜치를 목록을 보세요."
+    ambiguous: "활성 브랜치가 여러 개입니다. 하나를 지정하세요: {branches}"
+    append_unavailable: "--append는 분기 지점 이후 부모 꼬리가 압축되기 전까지만 사용 가능합니다. {branch}는 기본 작업 메모 join을 사용하세요."
+    joined: "✓ 브랜치 {branch} 병합 완료 ({strategy})."
+    db_unavailable: "세션 데이터베이스를 사용할 수 없습니다."
   commands:
     usage: "사용법: `/commands [page]`"
     skill_header: "⚡ **스킬 명령**:"
@@ -1518,6 +1529,10 @@ slash:
     description: "이 세션을 메시징 플랫폼(Telegram, Discord 등)으로 넘기기"
   branch:
     description: "현재 세션 분기 (Discord/Telegram/Slack/Matrix에서는 새 스레드; --here는 여기서 유지)"
+  fork:
+    description: "대화를 기록을 공유하는 지연 브랜치로 포크 (/join으로 병합)"
+  join:
+    description: "포크 브랜치를 이 세션에 다시 병합 (기본: 작업 메모 요약)"
   worktree:
     description: "격리된 git 워크트리 표시, 목록, 생성 또는 정리"
   compress:

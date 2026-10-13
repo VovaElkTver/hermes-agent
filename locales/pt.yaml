@@ -129,6 +129,17 @@ gateway:
     branched_thread_one: "⑂ Ramificado para **{title}** em um novo tópico ({count} mensagem copiada)\nTópico: {thread}\nOriginal: `{parent}` — este chat permanece nele\nRamo: `{new}`\nUse `/branch --here` para ramificar neste chat."
     branched_thread_many: "⑂ Ramificado para **{title}** em um novo tópico ({count} mensagens copiadas)\nTópico: {thread}\nOriginal: `{parent}` — este chat permanece nele\nRamo: `{new}`\nUse `/branch --here` para ramificar neste chat."
     thread_fallback: "Não foi possível criar um tópico aqui, então o ramo substituiu a sessão deste chat."
+  fork:
+    created: "⑂ Fork criado: **{title}** (ramo preguiçoso `{branch}`, compartilha histórico com `{parent}`)\nSessão do fork: `{new}`\nUse `/join {branch}` para mesclar de volta, `/branch` para uma cópia completa."
+    no_conversation: "Nada para bifurcar — o pai ainda não tem mensagens."
+    create_failed: "Falha ao criar o fork: {error}"
+  join:
+    none_active: "Sem ramos de fork ativos nesta sessão. Inicie um com /fork."
+    not_found: "Nenhum ramo ativo com esse nome: {arg}. Execute /join para listar os ramos."
+    ambiguous: "Vários ramos ativos, escolha um: {branches}"
+    append_unavailable: "--append só é possível enquanto o rabo do pai após o ponto de ramificação não estiver comprimido; use a junção por nota de trabalho para {branch}."
+    joined: "✓ Ramo {branch} mesclado ({strategy})."
+    db_unavailable: "Banco de dados de sessões indisponível."
   commands:
     usage: "Uso: `/commands [page]`"
     skill_header: "⚡ **Comandos de skill**:"
@@ -1518,6 +1529,10 @@ slash:
     description: "Transferir esta sessão para uma plataforma de mensagens (Telegram, Discord etc.)"
   branch:
     description: "Ramificar a sessão atual (novo tópico no Discord/Telegram/Slack/Matrix; --here permanece aqui)"
+  fork:
+    description: "Faz fork da conversa em um ramo preguiçoso com histórico compartilhado (mescle com /join)"
+  join:
+    description: "Mescla um ramo de fork de volta a esta sessão (padrão: resumo em nota de trabalho)"
   worktree:
     description: "Mostrar, listar, criar ou limpar worktrees git isolados"
   compress:

@@ -129,6 +129,17 @@ gateway:
     branched_thread_one: "⑂ Ramificado a **{title}** en un hilo nuevo ({count} mensaje copiado)\nHilo: {thread}\nOriginal: `{parent}` — este chat permanece en él\nRama: `{new}`\nUsa `/branch --here` para ramificar en este chat."
     branched_thread_many: "⑂ Ramificado a **{title}** en un hilo nuevo ({count} mensajes copiados)\nHilo: {thread}\nOriginal: `{parent}` — este chat permanece en él\nRama: `{new}`\nUsa `/branch --here` para ramificar en este chat."
     thread_fallback: "No se pudo crear un hilo aquí, así que la rama reemplazó la sesión de este chat."
+  fork:
+    created: "⑂ Escindido: **{title}** (rama perezosa `{branch}`, comparte historial con `{parent}`)\nSesión del fork: `{new}`\nUse `/join {branch}` para fusionar de vuelta, `/branch` para una copia completa."
+    no_conversation: "Nada que escindir: el padre aún no tiene mensajes."
+    create_failed: "No se pudo crear el fork: {error}"
+  join:
+    none_active: "No hay ramas activas de este padre. Inicie una con /fork."
+    not_found: "No existe esa rama activa: {arg}. Ejecute /join para ver las ramas."
+    ambiguous: "Hay varias ramas activas, indique una: {branches}"
+    append_unavailable: "--append solo es posible mientras el resto del padre tras el punto de bifurcación no esté comprimido; use la unión por nota de trabajo para {branch}."
+    joined: "✓ Rama {branch} fusionada ({strategy})."
+    db_unavailable: "Base de datos de sesiones no disponible."
   commands:
     usage: "Uso: `/commands [page]`"
     skill_header: "⚡ **Comandos de skill**:"
@@ -1518,6 +1529,10 @@ slash:
     description: "Transferir esta sesión a una plataforma de mensajería (Telegram, Discord, etc.)"
   branch:
     description: "Ramificar la sesión actual (nuevo hilo en Discord/Telegram/Slack/Matrix; --here se queda aquí)"
+  fork:
+    description: "Escinde la conversación en una rama perezosa con historial compartido (fusiona con /join)"
+  join:
+    description: "Fusiona una rama de fork de vuelta a esta sesión (predeterminado: resumen de nota de trabajo)"
   worktree:
     description: "Mostrar, listar, crear o limpiar worktrees aislados de git"
   compress:
