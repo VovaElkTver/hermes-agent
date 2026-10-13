@@ -42,7 +42,8 @@ def _socket_path() -> str:
 def check_tmux_available() -> tuple[bool, str]:
     """(ok, detail). Called at registration; also surfaced in tool errors."""
     try:
-        r = subprocess.run(["tmux", "-V"], capture_output=True, text=True, timeout=5, check=False)
+        r = subprocess.run(["tmux", "-V"], capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=5, check=False)
         if r.returncode != 0:
             return False, f"tmux binary exists but 'tmux -V' failed rc={r.returncode}"
         return True, r.stdout.strip()
@@ -317,7 +318,7 @@ def _read_done(done_file: Path, token: str) -> dict:
     out = {"started": False, "completed": False, "exit_code": None,
            "duration_s": None}
     try:
-        lines = done_file.read_text().splitlines()
+        lines = done_file.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return out
     start_t = end_t = None

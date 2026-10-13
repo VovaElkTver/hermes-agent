@@ -112,7 +112,7 @@ def _project_mcp_scope_disabled_toolsets(agent) -> list:
         # but logs WHY so "scoping isn't working" is diagnosable).
         try:
             from hermes_yaml import safe_load
-            with open(scope_file, encoding="utf-8") as fh:
+            with open(scope_file, encoding="utf-8-sig") as fh:
                 data = safe_load(fh.read()) or {}
         except Exception as exc:
             logger.warning(
@@ -268,9 +268,9 @@ def refresh_agent_mcp_tools(
                 try:
                     prefix_registered.difference_update(
                         registry.get_tool_names_for_toolset(ts))
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
-        except Exception:  # noqa: BLE001
+        except Exception:
             prefix_registered = None  # fail open to the plain rebuild
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
