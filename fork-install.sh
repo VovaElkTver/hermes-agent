@@ -41,6 +41,18 @@ else
   run "mkdir -p '$BASE' && git clone -q --branch '$BRANCH' '$FORK_URL' '$DEST'"
 fi
 
-run "exec '$DEST/setup-hermes.sh' ${*:1}"
-# exec above never returns; keep a friendly hint for dry-run mode
+run "'$DEST/setup-hermes.sh' ${*:1}"
+
+# Fork default (vovak, 2026-10-13): the shared-metrics consent is answered "No thanks"
+# at install time, so fork nodes never see the upstream first-run offer. Written into
+# raw config.yaml because save_config() strips false-equal-to-default values; skipped
+# when the owner already has a telemetry section (their answer wins, both directions).
+SEED="$BASE/config.yaml"
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  say "[dry-run] seed shared-metrics opt-out into $SEED"
+elif [ -f "$SEED" ] && ! grep -q '^telemetry:' "$SEED"; then
+  printf '\ntelemetry:\n  shared_metrics:\n    enabled: false\n    send: false\n    offer_version: 2\n' >> "$SEED"
+  say "Shared-metrics: opted out (fork default). Change any time: hermes setup telemetry"
+fi
+
 say "Then: source '$DEST/activate' && hermes gateway install"

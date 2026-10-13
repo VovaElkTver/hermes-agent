@@ -45,4 +45,14 @@ if (Test-Path (Join-Path $Dest ".git")) {
 $setup = Join-Path $Dest "setup-hermes.ps1"
 if ($DryRun) { Write-Host "[dry-run] & $setup" -ForegroundColor Cyan }
 else { & $setup; if ($LASTEXITCODE) { exit $LASTEXITCODE } }
+
+# Fork default (vovak, 2026-10-13): answer the upstream shared-metrics consent "No thanks"
+# at install time; skipped when a telemetry section already exists (the owner's answer wins).
+$seed = Join-Path $Base "config.yaml"
+if ($DryRun) { Write-Host "[dry-run] seed shared-metrics opt-out into $seed" -ForegroundColor Cyan }
+elseif ((Test-Path $seed) -and -not (Select-String -Path $seed -Pattern '^telemetry:' -Quiet)) {
+  Add-Content -Path $seed -Value "`r`ntelemetry:`r`n  shared_metrics:`r`n    enabled: false`r`n    send: false`r`n    offer_version: 2`r`n"
+  Write-Host "Shared-metrics: opted out (fork default). Change any time: hermes setup telemetry" -ForegroundColor Cyan
+}
+
 Write-Host "Then: & '$Dest\venv\Scripts\Activate.ps1'; hermes gateway install" -ForegroundColor Cyan
