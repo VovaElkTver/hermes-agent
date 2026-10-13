@@ -45,7 +45,7 @@ def _kill_tree(proc) -> None:
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                           capture_output=True, timeout=15)
+                           capture_output=True, timeout=15, check=False)
         except (OSError, subprocess.TimeoutExpired):
             pass
         return
@@ -164,5 +164,5 @@ def run_validation(conn, task_id: str, workdir: str) -> tuple[bool, str]:
     if not cmd:
         return True, "no validation_cmd in contract"
     p = subprocess.run(cmd, shell=True, cwd=workdir, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=600)
+                       encoding="utf-8", errors="replace", timeout=600, check=False)
     return p.returncode == 0, (p.stdout + p.stderr)[-1000:]

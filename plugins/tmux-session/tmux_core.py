@@ -42,7 +42,7 @@ def _socket_path() -> str:
 def check_tmux_available() -> tuple[bool, str]:
     """(ok, detail). Called at registration; also surfaced in tool errors."""
     try:
-        r = subprocess.run(["tmux", "-V"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["tmux", "-V"], capture_output=True, text=True, timeout=5, check=False)
         if r.returncode != 0:
             return False, f"tmux binary exists but 'tmux -V' failed rc={r.returncode}"
         return True, r.stdout.strip()
@@ -60,7 +60,7 @@ def _run(args: list[str], input_text: Optional[str] = None,
     cmd = ["tmux", "-S", _socket_path(), *args]
     try:
         proc = subprocess.run(cmd, input=input_text, capture_output=True,
-                              text=True, timeout=timeout)
+                              text=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
         return 124, f"tmux control call timed out after {timeout}s: {shlex.join(cmd)}"
     out = (proc.stdout or "") + (proc.stderr or "")

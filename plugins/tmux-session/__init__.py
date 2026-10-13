@@ -40,7 +40,7 @@ def register(ctx) -> None:
         return
 
     from .tools import TOOLS
-    from .tmux_core import check_tmux_available as _unused_check  # noqa: F401
+    from .tmux_core import check_tmux_available as _unused_check
 
     for name, schema, handler, emoji in TOOLS:
         ctx.register_tool(name=name, toolset="tmux_session", schema=schema,

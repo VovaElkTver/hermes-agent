@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("mautrix", reason="adapter test uses the real mautrix types")
 
-from plugins.platforms.matrix.adapter import MatrixAdapter  # noqa: E402
+from plugins.platforms.matrix.adapter import MatrixAdapter
 
 MY_MXID = "@bot:example.org"
 OTHER = "@alice:example.org"
@@ -56,7 +56,7 @@ async def test_inline_quote_uses_no_get():
     async def dn(room_id, user_id):
         return "Alice"
     a._get_display_name = dn
-    body, rid, text, author, name, is_own = await a._extract_reply_context(
+    body, _rid, text, author, _name, is_own = await a._extract_reply_context(
         "!r:example.org", "> <@alice:example.org> inline quote\n\nmy reply",
         {"m.in_reply_to": {"event_id": "$orig"}})
     assert fake.get_event_calls == 0
@@ -67,7 +67,7 @@ async def test_inline_quote_uses_no_get():
 @pytest.mark.asyncio
 async def test_no_quote_plain_text_fetch():
     a = _adapter(FakeClient(event=_event(body="the original")))
-    text, author, name, is_own = await _fetch(a)
+    text, author, _name, is_own = await _fetch(a)
     assert text == "the original" and author == OTHER and not is_own
 
 
@@ -110,7 +110,7 @@ async def test_encrypted_without_crypto_is_quiet():
 # 6. GET failure never propagates (C2)
 @pytest.mark.asyncio
 async def test_timeout_is_quiet():
-    a = _adapter(FakeClient(raises=asyncio.TimeoutError()))
+    a = _adapter(FakeClient(raises=TimeoutError()))
     text, author, name, is_own = await _fetch(a)
     assert (text, author, name, is_own) == (None, None, None, False)
 
@@ -119,7 +119,7 @@ async def test_timeout_is_quiet():
 @pytest.mark.asyncio
 async def test_is_own_when_sender_is_me():
     a = _adapter(FakeClient(event=_event(body="my earlier reply", sender=MY_MXID)))
-    text, author, name, is_own = await _fetch(a)
+    _text, author, _name, is_own = await _fetch(a)
     assert is_own is True and author == MY_MXID
 
 

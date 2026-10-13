@@ -18,7 +18,7 @@ def ctl(tmp_path):
 
 def test_schema_authority_is_hermes_state_common(ctl):
     """controller.connect(temp) must build ctl_* from hermes_state_common.SCHEMA_SQL only."""
-    conn, model, _ = ctl
+    conn, _model, _ = ctl
     names = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE name LIKE 'ctl_%'")}
     assert {"ctl_task", "ctl_run", "ctl_event", "ctl_autonomy_permission"} <= names
@@ -42,7 +42,7 @@ def test_full_lifecycle_and_race(ctl, tmp_path):
     # pause between choice and dispatch
     model.set_permission(conn, str(wd), enabled=False, granted_via="user-command")
     from controller import barrier
-    ok, why = barrier.check(conn, scope=str(wd), origin="autonomous", task_id=tid)
+    ok, _why = barrier.check(conn, scope=str(wd), origin="autonomous", task_id=tid)
     assert not ok
     # duplicate event absorbed
     assert model.emit(conn, kind="run_finished", origin="system", task_id=tid,
@@ -74,7 +74,7 @@ def test_commands_doc_and_restart(ctl, tmp_path):
 
 
 def test_reconcile_no_blind_retry(ctl):
-    conn, model, transitions = ctl
+    conn, model, _transitions = ctl
     from controller import reconcile
     rid = model.start_run(conn, task_id="t", step_id="s", contract_version=1, execution_epoch=1)
     conn.execute("INSERT INTO ctl_task VALUES ('t','o','','/w','g','running',1,NULL,0,0)")
@@ -86,8 +86,7 @@ def test_reconcile_no_blind_retry(ctl):
 
 def test_plugin_registers_off_and_flag_gates(tmp_path, monkeypatch):
     """plugins/controller loads; with flag off the hooks are inert (no DB touch)."""
-    import sys, types
-    mod = importlib.import_module("plugins.controller") if False else None
+    import sys
     import importlib.util
     spec = importlib.util.spec_from_file_location(
         "controller_plugin_under_test",

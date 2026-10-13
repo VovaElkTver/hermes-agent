@@ -28,7 +28,7 @@ def _event(chat_id="!room:x", user="@vovak:example.org", text="", urls=None):
     ev.source.chat_id = chat_id
     ev.user_id = user
     ev.text = text
-    ev.message_id = "$evt-%d" % time.monotonic_ns()
+    ev.message_id = f"$evt-{time.monotonic_ns()}"
     ev.raw_message = {"body": text}
     ev.media_urls = list(urls or [])
     ev.media_types = ["image/png"] * len(ev.media_urls)

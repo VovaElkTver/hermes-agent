@@ -86,7 +86,7 @@ def test_latest_review_per_step_wins_over_stale_needs_human(env):
     tid = model.create_task(c, owner="o", workdir=wd, goal="g")
     c.execute("UPDATE ctl_task SET state='ready' WHERE task_id=?", (tid,)); c.commit()
     model.agree_contract(c, tid)
-    st = model.add_step(c, tid, "impl", "do")
+    model.add_step(c, tid, "impl", "do")
     model.set_permission(c, wd, enabled=True, granted_via="user-command")
     calls = {"n": 0}
     def worker(run, task, step):
@@ -128,11 +128,11 @@ def test_queue_order_deps_and_notbefore(env):
     low = mk(c, wd, "low", priority=0)
     high = mk(c, wd, "high", priority=5)
     blocked = mk(c, wd, "later", deps=[low])
-    later = mk(c, wd, "wait", not_before=time.time() + 3600)
+    mk(c, wd, "wait", not_before=time.time() + 3600)
     ids = [t["task_id"] for t in Q.eligible(c, wd)]
     assert ids == [high, low]           # priority first; 'later' waiting on dep; 'wait' on time
     model.add_step(c, low, "impl", "s")
-    model.finish_step(c, conn_steps := c.execute(
+    model.finish_step(c, c.execute(
         "SELECT step_id FROM ctl_step WHERE task_id=?", (low,)).fetchone()["step_id"])
     # dependency is 'completed' only — done steps don't count
     c.execute("UPDATE ctl_task SET state='completed' WHERE task_id=?", (low,)); c.commit()
@@ -200,7 +200,7 @@ def test_needs_human_review_stops_loop(env):
     tid = mk(c, wd)
     model.add_step(c, tid, "impl", "code")
     model.set_permission(c, wd, enabled=True, granted_via="user-command")
-    log = loop.run_cycle(c, scope=wd, worker_fn=ok_worker,
+    loop.run_cycle(c, scope=wd, worker_fn=ok_worker,
                          review_fn=lambda r, s, a: {"verdict": "needs_human", "detail": "??"})
     assert model.get_task(c, tid)["state"] == "needs_human"
 

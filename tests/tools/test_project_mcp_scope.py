@@ -33,7 +33,7 @@ def fake_cwd(monkeypatch, tmp_path):
     )
     # Neutralize the global full-catalog switch resolution differences.
     from hermes_cli import config as cfgmod
-    monkeypatch.setattr(cfgmod, "load_config_readonly", lambda: {})
+    monkeypatch.setattr(cfgmod, "load_config_readonly", dict)
     return root
 
 
@@ -73,7 +73,7 @@ def test_disabled_scope_file_is_noop(fake_cwd, monkeypatch):
 
 
 def test_broken_scope_file_fails_open(fake_cwd, monkeypatch):
-    p = _write_scope(fake_cwd, "enabled: true\n\t nonsense: [")
+    _write_scope(fake_cwd, "enabled: true\n\t nonsense: [")
     monkeypatch.setattr(
         "tools.mcp_tool_discovery.get_registered_mcp_server_names",
         lambda: {"alpha"},
@@ -116,7 +116,7 @@ def test_resolve_refresh_applies_scope(monkeypatch, fake_cwd):
     )
     agent = _Agent("")
     agent.disabled_toolsets = ["web"]
-    enabled, disabled = mta._resolve_refresh_toolsets(agent, None, None)
+    _enabled, disabled = mta._resolve_refresh_toolsets(agent, None, None)
     assert "mcp-beta" in disabled
     assert "web" in disabled
 
@@ -129,7 +129,7 @@ def test_refresh_persist_not_dropped_when_scoped(monkeypatch, fake_cwd):
         lambda: {"alpha", "beta"},
     )
     agent = _Agent("")
-    enabled, disabled = mta._resolve_refresh_toolsets(agent, None, ["web"])
+    _enabled, disabled = mta._resolve_refresh_toolsets(agent, None, ["web"])
     assert "mcp-beta" in disabled
     # persistence on the explicit path: the agent keeps the effective selection
     assert "mcp-beta" in (agent.disabled_toolsets or [])
