@@ -28,12 +28,12 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`claude-code`](../user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md) | Delegate coding to Claude Code CLI (features, PRs). | `autonomous-ai-agents/claude-code` |
 | [`codex`](../user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md) | Delegate coding to OpenAI Codex CLI (features, PRs). | `autonomous-ai-agents/codex` |
 | [`computer-use`](../user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-computer-use.md) | Drive the desktop background-first; escalate on signal. | `autonomous-ai-agents/computer-use` |
-| [`controller-protocol`](../user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-controller-protocol.md) | Use when a message or tool result is tagged [controller], or when autonomy commands (работай автономно / пауза / продолжай) are in play. Defines the managed-autonomy contract: what the tags mean and who applies them. | `autonomous-ai-agents/controller-protocol` |
-| [`guardrails-protocol`](../user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-guardrails-protocol.md) | Use when a tool call is blocked or asked to approve by fork-guardrails (delegation block, approve gate, retry streak, force-push block). Explains what each means and the correct way to proceed. | `autonomous-ai-agents/guardrails-protocol` |
+| [`controller-protocol`](../user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-controller-protocol.md) | Use on [controller] tags or autonomy commands (go/pause). | `autonomous-ai-agents/controller-protocol` |
+| [`guardrails-protocol`](../user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-guardrails-protocol.md) | Use when fork-guardrails blocks or approves a tool call. | `autonomous-ai-agents/guardrails-protocol` |
 | [`hermes-agent`](../user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) | Use, configure, theme, extend, and orchestrate Hermes Agent. | `autonomous-ai-agents/hermes-agent` |
 | [`install-fork-agent`](../user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-install-fork-agent.md) | Install or update the VovaElkTver Hermes fork on a host. | `autonomous-ai-agents/install-fork-agent` |
 | [`opencode`](../user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode.md) | Delegate coding to OpenCode CLI (features, PR review). | `autonomous-ai-agents/opencode` |
-| [`supervisor-protocol`](../user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-supervisor-protocol.md) | Use when a tool result or steer message is tagged [supervisor]. Defines the supervisor-protocol contract: gate blocks, annotations, steers, escalations. | `autonomous-ai-agents/supervisor-protocol` |
+| [`supervisor-protocol`](../user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-supervisor-protocol.md) | Use when a tool result or steer is tagged [supervisor]. | `autonomous-ai-agents/supervisor-protocol` |
 
 ## creative
 

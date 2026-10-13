@@ -38,11 +38,7 @@ def _err(msg: str) -> str:
 
 def _workspace_cwd() -> str:
     """Default cwd for ensure_session when the model omits it."""
-    try:
-        from hermes_cli.config import get_hermes_home
-        return os.path.expanduser("~")
-    except Exception:
-        return os.path.expanduser("~")
+    return os.path.expanduser("~")
 
 
 # ------------------------------------------------------------------ tools ----

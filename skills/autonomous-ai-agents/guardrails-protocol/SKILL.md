@@ -1,6 +1,6 @@
 ---
 name: guardrails-protocol
-description: "Use when a tool call is blocked by fork guardrails."
+description: "Use when fork-guardrails blocks or approves a tool call."
 version: 1.0.0
 author: hermes
 license: MIT

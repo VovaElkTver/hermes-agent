@@ -1,6 +1,6 @@
 ---
 name: controller-protocol
-description: "Use when a message or tool result is tagged [controller]."
+description: "Use on [controller] tags or autonomy commands (go/pause)."
 version: 1.0.0
 author: hermes
 license: MIT

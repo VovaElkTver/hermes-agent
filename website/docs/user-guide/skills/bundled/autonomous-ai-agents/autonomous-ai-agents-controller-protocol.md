@@ -1,14 +1,14 @@
 ---
-title: "Controller Protocol"
+title: "Controller Protocol — Use on [controller] tags or autonomy commands (go/pause)"
 sidebar_label: "Controller Protocol"
-description: "Use when a message or tool result is tagged [controller], or when autonomy commands (работай автономно / пауза / продолжай) are in play"
+description: "Use on [controller] tags or autonomy commands (go/pause)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Controller Protocol
 
-Use when a message or tool result is tagged [controller], or when autonomy commands (работай автономно / пауза / продолжай) are in play. Defines the managed-autonomy contract: what the tags mean and who applies them.
+Use on [controller] tags or autonomy commands (go/pause).
 
 ## Skill metadata
 
@@ -19,6 +19,8 @@ Use when a message or tool result is tagged [controller], or when autonomy comma
 | Version | `1.0.0` |
 | Author | hermes |
 | License | MIT |
+| Platforms | linux, macos, windows |
+| Tags | `autonomy`, `protocol` |
 
 ## Reference: full SKILL.md
 

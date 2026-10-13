@@ -1,14 +1,14 @@
 ---
-title: "Supervisor Protocol — Use when a tool result or steer message is tagged [supervisor]"
+title: "Supervisor Protocol — Use when a tool result or steer is tagged [supervisor]"
 sidebar_label: "Supervisor Protocol"
-description: "Use when a tool result or steer message is tagged [supervisor]"
+description: "Use when a tool result or steer is tagged [supervisor]"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Supervisor Protocol
 
-Use when a tool result or steer message is tagged [supervisor]. Defines the supervisor-protocol contract: gate blocks, annotations, steers, escalations.
+Use when a tool result or steer is tagged [supervisor].
 
 ## Skill metadata
 
@@ -19,6 +19,8 @@ Use when a tool result or steer message is tagged [supervisor]. Defines the supe
 | Version | `1.0.0` |
 | Author | hermes |
 | License | MIT |
+| Platforms | linux, macos, windows |
+| Tags | `autonomy`, `protocol` |
 
 ## Reference: full SKILL.md
 

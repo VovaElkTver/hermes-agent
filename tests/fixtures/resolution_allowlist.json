@@ -697,6 +697,7 @@
   {
     "path": "controller/workers.py",
     "symbol": "make_worker.<locals>.worker_fn",
-    "kind": "bare_which"
+    "kind": "bare_which",
+    "reason": "worker subprocess launcher resolves `which` on PATH deliberately (same pattern as tools/* probe entries)"
   }
 ]

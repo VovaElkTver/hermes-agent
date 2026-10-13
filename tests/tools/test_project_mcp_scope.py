@@ -8,10 +8,26 @@ CWD lives under a project with a scope file, and fail-open everywhere else.
 from __future__ import annotations
 
 import os
+import tempfile
 
 import pytest
 
 from tools import mcp_tool_agent as mta
+
+
+@pytest.fixture()
+def outside_home_tmp(request, tmp_path_factory):
+    """A scratch dir guaranteed NOT to live under the real Hermes home
+    (TMPDIR may point into ~/.hermes/cache/scratch; the home-IO guard
+    refuses even stat'ing ancestors of such paths)."""
+    from pathlib import Path
+    import shutil
+    base = tmp_path_factory.mktemp("outside-home")
+    if str(base).startswith(str(Path.home() / ".hermes")):
+        base = Path(tempfile.gettempdir()) / f"hermes-test-{os.getpid()}-{base.name}"
+        base.mkdir(parents=True, exist_ok=True)
+        request.addfinalizer(lambda: shutil.rmtree(base, ignore_errors=True))
+    return base
 
 
 class _Agent:
@@ -133,3 +149,42 @@ def test_refresh_persist_not_dropped_when_scoped(monkeypatch, fake_cwd):
     assert "mcp-beta" in disabled
     # persistence on the explicit path: the agent keeps the effective selection
     assert "mcp-beta" in (agent.disabled_toolsets or [])
+
+
+def test_home_fallback_scopes_when_no_recorded_cwd(monkeypatch, outside_home_tmp):
+    """No recorded session CWD: the probe follows get_hermes_home(), so a global
+    ``<HERMES_HOME>/mcp-scope.yaml`` keeps the narrow catalog — and it never
+    stats a stray process CWD."""
+    import tools.file_tools_paths as ftp
+    import hermes_constants
+    from hermes_cli import config as cfgmod
+
+    home = outside_home_tmp / "home"
+    home.mkdir()
+    monkeypatch.setattr(ftp, "_authoritative_workspace_root", lambda task_id="default": None)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(cfgmod, "load_config_readonly", dict)
+    monkeypatch.setattr(
+        "tools.mcp_tool_discovery.get_registered_mcp_server_names",
+        lambda: {"alpha", "beta"},
+    )
+    _write_scope(home, "enabled: true\nservers:\n  - alpha\n")
+    assert mta._project_mcp_scope_disabled_toolsets(_Agent("")) == ["mcp-beta"]
+
+
+def test_home_fallback_no_file_is_noop(monkeypatch, outside_home_tmp):
+    """Home without a scope file: full catalog, no error."""
+    import tools.file_tools_paths as ftp
+    import hermes_constants
+    from hermes_cli import config as cfgmod
+
+    home = outside_home_tmp / "home"
+    home.mkdir()
+    monkeypatch.setattr(ftp, "_authoritative_workspace_root", lambda task_id="default": None)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(cfgmod, "load_config_readonly", dict)
+    monkeypatch.setattr(
+        "tools.mcp_tool_discovery.get_registered_mcp_server_names",
+        lambda: {"alpha"},
+    )
+    assert mta._project_mcp_scope_disabled_toolsets(_Agent("")) == []

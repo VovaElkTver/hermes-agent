@@ -134,12 +134,12 @@ gateway:
     no_conversation: "Níl aon rud le forcráin — níl aon teachtairí ag an seisiún tuismitheora fós."
     create_failed: "Theip ar chruthú an fhorcráin: {error}"
   join:
-    none_active: "Nil aon chraobhacha forcráin gníomhacha sa seisiún seo. Tosaigh ceann le /fork."
+    none_active: "Níl aon chraobhacha forcráin gníomhacha sa seisiún seo. Tosaigh ceann le /fork."
     not_found: "Níl aon chraobh ghníomhach mar sin: {arg}. Rith /join chun na craobhacha a liostú."
     ambiguous: "Tá roinnt craobhacha gníomhacha ann, ainmnigh ceann: {branches}"
     append_unavailable: "Níl --append ar fáil ach amháin más neamhchomhbhrúite eireaball an tuismitheora tar éis phointe an bhraoinse; úsáid an chomhleá nóta oibre réamhshocraithe do {branch}."
     joined: "✓ Craobh {branch} chomhleáite ({strategy})."
-    db_unavailable: "Bunachar sonraí seisiún ar fáil."
+    db_unavailable: "Níl bunachar sonraí na seisiún ar fáil."
   commands:
     usage: "Úsáid: `/commands [page]`"
     skill_header: "⚡ **Orduithe Scileanna**:"
