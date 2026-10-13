@@ -64,13 +64,14 @@ def _project_mcp_scope_disabled_toolsets(agent) -> list:
         cwd = _authoritative_workspace_root(task_id)
     except Exception:
         cwd = None
-    # Fall back to the process CWD (the gateway's WorkingDirectory, e.g.
-    # ~/.hermes) so DM sessions with no recorded terminal cwd still resolve a
-    # walk-up root. A global scope file under ~ is then found via the parent
-    # walk, keeping the narrow catalog for non-project sessions.
+    # No recorded session CWD (plain DM session): scope against the Hermes home
+    # itself rather than the process CWD — a global ``~/.hermes/mcp-scope.yaml``
+    # still applies, and the probe follows HERMES_HOME (test-sandboxable), never
+    # a stray process directory.
     if not cwd:
         try:
-            cwd = os.getcwd()
+            from hermes_constants import get_hermes_home
+            cwd = str(get_hermes_home())
         except Exception:
             cwd = None
     if not cwd:
@@ -272,6 +273,8 @@ def refresh_agent_mcp_tools(
                     pass
         except Exception:
             prefix_registered = None  # fail open to the plain rebuild
+    else:
+        content_aware = True
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
         staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
