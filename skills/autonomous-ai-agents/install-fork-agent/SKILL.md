@@ -30,7 +30,7 @@ This skill does not cover upstream-Nous installs or profile management.
 - `git` on PATH and network access to GitHub.
 - Linux/WSL: bash. Windows: PowerShell 5.1+ (`iwr`/`iex`).
 - The repo was renamed to `VovaElkTver/hermes-autonomous-agent`; GitHub redirects the old
-  `VovaElkTver/hermes-agent` URL that the installers default to, so fresh clones via the
+  `VovaElkTver/hermes-autonomous-agent` URL that the installers default to, so fresh clones via the
   one-liners below keep working. Canonical README lines use the new name.
 
 ## How to Run
@@ -38,13 +38,13 @@ This skill does not cover upstream-Nous installs or profile management.
 Linux / WSL / macOS:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/VovaElkTver/hermes-agent/main/fork-install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/VovaElkTver/hermes-autonomous-agent/main/fork-install.sh)
 ```
 
 Windows (PowerShell):
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/VovaElkTver/hermes-agent/main/fork-install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/VovaElkTver/hermes-autonomous-agent/main/fork-install.ps1 | iex
 ```
 
 Extra arguments after the script name are forwarded to `setup-hermes.sh` (bash variant
@@ -56,7 +56,7 @@ Env overrides (identical names in both installers):
 
 | Var | Default (sh / ps1) | Effect |
 |---|---|---|
-| `HERMES_FORK_URL` | `https://github.com/VovaElkTver/hermes-agent` | clone source |
+| `HERMES_FORK_URL` | `https://github.com/VovaElkTver/hermes-autonomous-agent` | clone source |
 | `HERMES_FORK_BRANCH` | `main` | branch to clone/fast-forward |
 | `HERMES_HOME` | `$HOME/.hermes` / `$env:LOCALAPPDATA\hermes` | base dir; checkout goes to `<base>/hermes-agent` |
 | `DRY_RUN=1` | off | print actions, touch nothing (smoke-testable anywhere) |
