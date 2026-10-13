@@ -864,6 +864,11 @@ class MatrixAdapter(BasePlatformAdapter):
         self._threads = ThreadParticipationTracker("matrix")  # require_mention bypass
         self._parked_voices = ParkedVoices()  # unmentioned voice awaiting a bare @mention
         self._require_mention: bool = self._parse_require_mention(config)
+        # Reply-ownership (patch 27.09, ported): a reply to an event this adapter sent
+        # counts as addressing the bot. Bounded LRU of our own event ids, newest kept.
+        self._reply_ownership: bool = self._parse_reply_ownership(config)
+        self._sent_event_ids: deque = deque(maxlen=4096)
+        self._sent_event_ids_set: set[str] = set()
         self._thread_require_mention: bool = self._parse_thread_require_mention(config)
         self._free_rooms: set[str] = _extra_csv_set(config, "free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS")
         # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
@@ -974,6 +979,12 @@ class MatrixAdapter(BasePlatformAdapter):
         """MATRIX_REQUIRE_MENTION (scoped) → ``require_mention`` in config.extra → true."""
         configured = _extra_or_secret(config.extra, "require_mention", "MATRIX_REQUIRE_MENTION", True)
         return configured if isinstance(configured, bool) else str(configured).lower() not in {"false", "0", "no", "off"}
+
+    @staticmethod
+    def _parse_reply_ownership(config) -> bool:
+        """MATRIX_REPLY_OWNERSHIP (scoped) -> reply_ownership in config.extra -> false."""
+        configured = _extra_or_secret(config.extra, "reply_ownership", "MATRIX_REPLY_OWNERSHIP", False)
+        return configured if isinstance(configured, bool) else str(configured).strip().lower() in {"1", "true", "on", "yes"}
 
     @staticmethod
     def _parse_thread_require_mention(config) -> bool:
@@ -1452,7 +1463,24 @@ class MatrixAdapter(BasePlatformAdapter):
         """Send one m.room.message event (45s cap) and return its event ID as str."""
         event_id = await asyncio.wait_for(
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
+        self._mark_sent_event(str(event_id))
         return str(event_id)
+
+    def _mark_sent_event(self, event_id: str) -> None:
+        """Record our own outbound event id for the reply-ownership gate (bounded)."""
+        if not event_id or event_id in self._sent_event_ids_set:
+            return
+        if len(self._sent_event_ids) >= (self._sent_event_ids.maxlen or 0):
+            self._sent_event_ids_set.discard(self._sent_event_ids[0])
+        self._sent_event_ids.append(event_id)
+        self._sent_event_ids_set.add(event_id)
+
+    def _owns_replied_event(self, relates_to: dict) -> bool:
+        """True when the message replies (non-fall-back) to an event this adapter sent."""
+        if not self._reply_ownership or relates_to.get("is_falling_back"):
+            return False
+        target = (relates_to.get("m.in_reply_to") or {}).get("event_id")
+        return bool(target) and target in self._sent_event_ids_set
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
         """Post a seed message and return its ``event_id`` as the handoff ``thread_id``. Matrix has
@@ -2131,7 +2159,7 @@ class MatrixAdapter(BasePlatformAdapter):
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned and not body.startswith("/"):
+                if not is_mentioned and not body.startswith("/") and not self._owns_replied_event(relates_to):
                     if voice_gate is not None:  # parkable voice: a bare @mention may follow (Element X)
                         self._parked_voices.park(room_id, sender, voice_gate, event_id, source_content, relates_to)
                     logger.debug(
