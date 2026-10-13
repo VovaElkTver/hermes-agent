@@ -103,7 +103,7 @@ def session_join(branch_id: str = "", strategy: str = "note", db=None,
                         "note": "use /join for compressor-quality summary" if strategy == "note" else ""})
 
 
-from tools.registry import registry  # noqa: E402
+from tools.registry import registry
 
 registry.register(
     name="session_fork",
