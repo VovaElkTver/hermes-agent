@@ -1,14 +1,14 @@
 ---
 name: guardrails-protocol
-description: >-
-  Use when a tool call is blocked or asked to approve by fork-guardrails
-  (delegation block, approve gate, retry streak, force-push block). Explains
-  what each means and the correct way to proceed.
+description: "Use when fork-guardrails blocks or approves a tool call."
 version: 1.0.0
 author: hermes
 license: MIT
+platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [autonomy, protocol]
 ---
-
 # Fork-guardrails protocol
 
 Policy guards apply to EVERY session (operator included) and speak through

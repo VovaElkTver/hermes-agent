@@ -1,14 +1,14 @@
 ---
-title: "Guardrails Protocol"
+title: "Guardrails Protocol — Use when fork-guardrails blocks or approves a tool call"
 sidebar_label: "Guardrails Protocol"
-description: "Use when a tool call is blocked or asked to approve by fork-guardrails (delegation block, approve gate, retry streak, force-push block)"
+description: "Use when fork-guardrails blocks or approves a tool call"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Guardrails Protocol
 
-Use when a tool call is blocked or asked to approve by fork-guardrails (delegation block, approve gate, retry streak, force-push block). Explains what each means and the correct way to proceed.
+Use when fork-guardrails blocks or approves a tool call.
 
 ## Skill metadata
 
@@ -19,6 +19,8 @@ Use when a tool call is blocked or asked to approve by fork-guardrails (delegati
 | Version | `1.0.0` |
 | Author | hermes |
 | License | MIT |
+| Platforms | linux, macos, windows |
+| Tags | `autonomy`, `protocol` |
 
 ## Reference: full SKILL.md
 

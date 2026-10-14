@@ -129,6 +129,17 @@ gateway:
     branched_thread_one: "⑂ تم التفريع إلى **{title}** في سلسلة جديدة (تم نسخ {count} رسالة)\nالسلسلة: {thread}\nالأصل: `{parent}` — تبقى هذه المحادثة عليه\nالفرع: `{new}`\nاستخدم `/branch --here` للتفريع في هذه المحادثة."
     branched_thread_many: "⑂ تم التفريع إلى **{title}** في سلسلة جديدة (تم نسخ {count} رسائل)\nالسلسلة: {thread}\nالأصل: `{parent}` — تبقى هذه المحادثة عليه\nالفرع: `{new}`\nاستخدم `/branch --here` للتفريع في هذه المحادثة."
     thread_fallback: "تعذر إنشاء سلسلة هنا، لذا حل الفرع محل جلسة هذه المحادثة."
+  fork:
+    created: "⑂ تم التفرع: **{title}** (فرع كسول `{branch}`، يشارك السجل مع `{parent}`)\nجلسة التفرع: `{new}`\nاستخدم `/join {branch}` للدمج مجددًا، و`/branch` لنسخة كاملة."
+    no_conversation: "لا شيء لتفرعه — لا تحتوي الجلسة الأصل على رسائل بعد."
+    create_failed: "تعذر إنشاء التفرع: {error}"
+  join:
+    none_active: "لا توجد فروع متفرعة نشطة في هذه الجلسة. ابدأ أحدها بـ /fork."
+    not_found: "لا يوجد فرع نشط بهذا الاسم: {arg}. شغّل /join لعرض الفروع."
+    ambiguous: "توجد عدة فروع نشطة، حدد واحدًا: {branches}"
+    append_unavailable: "--append ممكن فقط ما دامتذيول الأصل بعد نقطة التفرع غير مضغوط؛ استخدم دمج مذكرة العمل الافتراضي للفرع {branch}."
+    joined: "✓ تم دمج الفرع {branch} ({strategy})."
+    db_unavailable: "قاعدة بيانات الجلسات غير متاحة."
   commands:
     usage: "الاستخدام: `/commands [page]`"
     skill_header: "⚡ **أوامر المهارات**:"
@@ -1518,6 +1529,10 @@ slash:
     description: "تسليم هذه الجلسة إلى منصة مراسلة (Telegram أو Discord وغيرهما)"
   branch:
     description: "تفريع الجلسة الحالية (سلسلة جديدة على Discord/Telegram/Slack/Matrix؛ --here يبقيها هنا)"
+  fork:
+    description: "تفرع المحادثة إلى فرع كسول بسجل مشترك (ادمج عبر /join)"
+  join:
+    description: "دمج فرع متفرع مرة أخرى إلى هذه الجلسة (الافتراضي: ملخص مذكرة العمل)"
   worktree:
     description: "عرض أو سرد أو إنشاء أو تنظيف git worktrees معزولة"
   compress:

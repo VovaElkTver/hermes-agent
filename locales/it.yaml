@@ -129,6 +129,17 @@ gateway:
     branched_thread_one: "⑂ Ramificato in **{title}** in un nuovo thread ({count} messaggio copiato)\nThread: {thread}\nOriginale: `{parent}` — questa chat resta su di esso\nRamo: `{new}`\nUsa `/branch --here` per ramificare in questa chat."
     branched_thread_many: "⑂ Ramificato in **{title}** in un nuovo thread ({count} messaggi copiati)\nThread: {thread}\nOriginale: `{parent}` — questa chat resta su di esso\nRamo: `{new}`\nUsa `/branch --here` per ramificare in questa chat."
     thread_fallback: "Non è stato possibile creare un thread qui, quindi il ramo ha sostituito la sessione di questa chat."
+  fork:
+    created: "⑂ Fork creato: **{title}** (branch pigro `{branch}`, condivide la cronologia con `{parent}`)\nSessione del fork: `{new}`\nUsa `/join {branch}` per unire di nuovo, `/branch` per una copia completa."
+    no_conversation: "Niente da forkare: il parent non ha ancora messaggi."
+    create_failed: "Impossibile creare il fork: {error}"
+  join:
+    none_active: "Nessun branch fork attivo in questa sessione. Avvialo con /fork."
+    not_found: "Nessun branch attivo con quel nome: {arg}. Esegui /join per elencarli."
+    ambiguous: "Più branch attivi, indicane uno: {branches}"
+    append_unavailable: "--append è possibile solo finché la coda del parent dopo il punto di branch non è compressa; usa il join con work-note per {branch}."
+    joined: "✓ Branch {branch} unito ({strategy})."
+    db_unavailable: "Database delle sessioni non disponibile."
   commands:
     usage: "Uso: `/commands [page]`"
     skill_header: "⚡ **Comandi skill**:"
@@ -1518,6 +1529,10 @@ slash:
     description: "Passa questa sessione a una piattaforma di messaggistica (Telegram, Discord, ecc.)"
   branch:
     description: "Crea un ramo della sessione attuale (nuovo thread su Discord/Telegram/Slack/Matrix; --here resta qui)"
+  fork:
+    description: "Fa il fork della conversazione in un branch pigro con cronologia condivisa (unisci con /join)"
+  join:
+    description: "Unisce un branch fork a questa sessione (default: riassunto work-note)"
   worktree:
     description: "Mostra, elenca, crea o elimina worktree git isolati"
   compress:

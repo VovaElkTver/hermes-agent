@@ -75,7 +75,7 @@ def review(cfg: dict, goal: str, history: list[dict[str, Any]]) -> dict[str, Any
             ch0 = data["choices"][0]
             content = ch0["message"]["content"] or ""
             finish = ch0.get("finish_reason")
-        m = re.search(r"\{.*\}", content, re.S)
+        m = re.search(r"\{.*\}", content, re.DOTALL)
         parsed = bool(m)
         # reasoning-model judges spend max_tokens on hidden reasoning BEFORE the JSON
         # answer lands in content: budget exhausted => finish_reason=length, content=''

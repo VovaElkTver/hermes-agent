@@ -693,5 +693,11 @@
     "symbol": "_git_executable",
     "kind": "bare_which",
     "reason": "gate reads of the paused gateways' checkout run outside the updater, where install.ps1's PM-staged git is not on PATH; falls back to that staged git (moves to hermes_cli._early_recovery._git_executable when #132361 lands)"
+  },
+  {
+    "path": "controller/workers.py",
+    "symbol": "make_worker.<locals>.worker_fn",
+    "kind": "bare_which",
+    "reason": "worker subprocess launcher resolves `which` on PATH deliberately (same pattern as tools/* probe entries)"
   }
 ]

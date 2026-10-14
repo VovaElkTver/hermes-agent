@@ -35,12 +35,10 @@ def main(argv=None) -> int:
         if not perm["enabled"]:
             out[scope] = [{"stop": "permission off"}]
             continue
-        import hermes_yaml
         judge_cfg = None
         try:
-            from hermes_constants import get_hermes_home
-            cfg = hermes_yaml.safe_load(
-                (get_hermes_home() / "config.yaml").read_text(encoding="utf-8"))
+            from hermes_cli.config import load_config_readonly
+            cfg = load_config_readonly() or {}
             judge_cfg = (cfg.get("plugins", {}).get("entries", {})
                          .get("supervisor", {}).get("settings", {}).get("judge"))
         except Exception:

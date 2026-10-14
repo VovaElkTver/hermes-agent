@@ -158,7 +158,7 @@ class TestTranscriptOverlay:
 
     def test_base_lost_degrades_to_plain(self, db: SessionDB):
         _parent_with_history(db)
-        bid, child = _fork(db, "sess-parent")
+        _bid, child = _fork(db, "sess-parent")
         # simulate compaction eating the parent prefix
         db._execute_write(lambda conn: conn.execute(
             "UPDATE messages SET message_uid = NULL WHERE session_id = 'sess-parent'"),

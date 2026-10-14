@@ -1,14 +1,14 @@
 ---
 name: controller-protocol
-description: >-
-  Use when a message or tool result is tagged [controller], or when autonomy
-  commands (работай автономно / пауза / продолжай) are in play. Defines the
-  managed-autonomy contract: what the tags mean and who applies them.
+description: "Use on [controller] tags or autonomy commands (go/pause)."
 version: 1.0.0
 author: hermes
 license: MIT
+platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [autonomy, protocol]
 ---
-
 # Controller protocol ([controller] tags)
 
 The managed-autonomy controller applies control operations in CODE, before

@@ -13,13 +13,13 @@ from . import model
 
 # RU/EN free formulations -> canonical ops. Applied to the USER message only.
 RX = {
-    "enable": re.compile(r"(работай\s+автономно|приступай|автономность\s+включ|enable\s+autonomy|go\s+autonomous)", re.I),
-    "pause": re.compile(r"(пауза|стоп\s+очереди|pause\s+autonomy|замри|обсудим)", re.I),
-    "resume": re.compile(r"(продолжай\s+автономно|возобнови\s+автономность|resume\s+autonomy)", re.I),
-    "cancel": re.compile(r"отмени\s+задачу\s+(\S+)|cancel\s+task\s+(\S+)", re.I),
-    "status": re.compile(r"(статус\s+задач|покажи\s+статус|show\s+status)", re.I),
-    "head": re.compile(r"(?:подними\s+задачу\s+(\S+)\s+в\s+(?:начало|первое)|move\s+task\s+(\S+)\s+(?:to\s+)?head)", re.I),
-    "tail": re.compile(r"(?:опусти\s+задачу\s+(\S+)\s+в\s+конец(?:\s+очереди)?|move\s+task\s+(\S+)\s+tail)", re.I),
+    "enable": re.compile(r"(работай\s+автономно|приступай|автономность\s+включ|enable\s+autonomy|go\s+autonomous)", re.IGNORECASE),
+    "pause": re.compile(r"(пауза|стоп\s+очереди|pause\s+autonomy|замри|обсудим)", re.IGNORECASE),
+    "resume": re.compile(r"(продолжай\s+автономно|возобнови\s+автономность|resume\s+autonomy)", re.IGNORECASE),
+    "cancel": re.compile(r"отмени\s+задачу\s+(\S+)|cancel\s+task\s+(\S+)", re.IGNORECASE),
+    "status": re.compile(r"(статус\s+задач|покажи\s+статус|show\s+status)", re.IGNORECASE),
+    "head": re.compile(r"(?:подними\s+задачу\s+(\S+)\s+в\s+(?:начало|первое)|move\s+task\s+(\S+)\s+(?:to\s+)?head)", re.IGNORECASE),
+    "tail": re.compile(r"(?:опусти\s+задачу\s+(\S+)\s+в\s+конец(?:\s+очереди)?|move\s+task\s+(\S+)\s+tail)", re.IGNORECASE),
 }
 
 

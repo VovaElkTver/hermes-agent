@@ -132,6 +132,17 @@ gateway:
     branched_thread_one: "⑂ Elágazás **{title}** néven új szálban ({count} üzenet másolva)\nSzál: {thread}\nEredeti: `{parent}` — ez a csevegés rajta marad\nÁg: `{new}`\nA `/branch --here` ebben a csevegésben ágaztat el."
     branched_thread_many: "⑂ Elágazás **{title}** néven új szálban ({count} üzenet másolva)\nSzál: {thread}\nEredeti: `{parent}` — ez a csevegés rajta marad\nÁg: `{new}`\nA `/branch --here` ebben a csevegésben ágaztat el."
     thread_fallback: "Itt nem sikerült szálat létrehozni, így az ág e csevegés munkamenetét váltotta le."
+  fork:
+    created: "⑂ Fork elkészült: **{title}** (lusta ág `{branch}`, közös előzmények a(z) `{parent}` ággal)\nFork munkamenet: `{new}`\n`/join {branch}` a visszaolvasztáshoz, `/branch` a teljes másolathoz."
+    no_conversation: "Nincs mit forkolni — az őszakaszban még nincs üzenet."
+    create_failed: "Nem sikerült forkot létrehozni: {error}"
+  join:
+    none_active: "Nincs aktív fork-ág ebben a munkamenetben. Indítson egyet a /fork paranccsal."
+    not_found: "Nincs ilyen aktív ág: {arg}. A /join listázza az ágakat."
+    ambiguous: "Több aktív ág van, jelöljön meg egyet: {branches}"
+    append_unavailable: "A --append csak az elágazási pont utáni szülő-farok tömörítetlen állapotában lehetséges; használja az alapértelmezett munka-jegyzet egyesítést ehhez: {branch}."
+    joined: "✓ {branch} ág egyesítve ({strategy})."
+    db_unavailable: "A munkamenet-adatbázis nem elérhető."
   commands:
     usage: "Használat: `/commands [page]`"
     skill_header: "⚡ **Készségparancsok**:"
@@ -1535,6 +1546,10 @@ slash:
     description: "A munkamenet átadása egy üzenetküldő platformnak (Telegram, Discord stb.)"
   branch:
     description: "Az aktuális munkamenet elágaztatása (új szál Discordon/Telegramon/Slacken/Matrixon; a --here itt marad)"
+  fork:
+    description: "A beszélgetés megosztott előzményű lusta ággá forkolása (egyesítés a /join paranccsal)"
+  join:
+    description: "Fork-ág visszaolvasztása ebbe a munkamenetbe (alapértelmezés: munka-jegyzet kivonat)"
   worktree:
     description: "Izolált git worktree-k megjelenítése, listázása, létrehozása vagy tisztítása"
   compress:

@@ -96,16 +96,16 @@ def _task_for_scope(conn, scope: str):
 def _on_post_tool_call(tool_name: str = "", args: dict | None = None, task_id: str = "",
                        session_id: str = "", **kw):
     if not _enabled() or kw.get("status") not in {"ok", "error"}:
-        return None
+        return
     try:
         from controller import model
         tid = kw.get("controller_task_id")
         if not tid:
-            return None
+            return
         model.add_budget(_db(), tid, "tool_calls", 1)
     except Exception as exc:
         logger.debug("controller budget accounting failed: %s", exc)
-    return None
+    return
 
 
 
@@ -170,13 +170,13 @@ def _maybe_pump(scope: str) -> None:
 
 def _on_post_llm_call(session_id: str = "", **kw):
     if not _enabled():
-        return None
+        return
     try:
         scope = _scope_by_session.get(session_id) or _default_scope()
         _maybe_pump(scope)
     except Exception as exc:
         logger.debug("controller post-llm pump check failed: %s", exc)
-    return None
+    return
 
 
 def register(ctx):

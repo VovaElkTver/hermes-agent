@@ -17,15 +17,15 @@ SHELL_TOOLS = {"terminal", "execute_code"}  # execute_code can spawn subprocesse
 
 # Patterns are a speed bump for the model, not a sandbox (see #73338 discussion).
 FORCE_PUSH_PROTECTED = re.compile(
-    r"git\s+push\b(?=.*(?:\s--force(?!-with-lease)\b|\s-[a-zA-Z]*f\b|\s\+))(?=.*\b(?:main|master)\b)", re.S)
+    r"git\s+push\b(?=.*(?:\s--force(?!-with-lease)\b|\s-[a-zA-Z]*f\b|\s\+))(?=.*\b(?:main|master)\b)", re.DOTALL)
 OUTBOUND = {
     "git-push": re.compile(r"\bgit\s+push\b"),
     "gh-publish": re.compile(r"\bgh\s+(?:pr\s+(?:create|merge)|release\s+create)\b"),
     "registry-push": re.compile(r"\b(?:docker|podman)\s+push\b|\btwine\s+upload\b|\bnpm\s+publish\b"),
     "rm-recursive": re.compile(r"\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|-r\s+-f|-f\s+-r|--recursive)\b"),
 }
-DELEGATION_ASK = re.compile(r"\b(?:sub-?agents?|parallel agents?|delegate|delegation)\b", re.I)
-DELEGATION_NEG = re.compile(r"\b(?:don'?t|do not|no|never|without)\s+(?:\w+\s+){0,2}(?:sub-?agents?|delegat\w*)", re.I)
+DELEGATION_ASK = re.compile(r"\b(?:sub-?agents?|parallel agents?|delegate|delegation)\b", re.IGNORECASE)
+DELEGATION_NEG = re.compile(r"\b(?:don'?t|do not|no|never|without)\s+(?:\w+\s+){0,2}(?:sub-?agents?|delegat\w*)", re.IGNORECASE)
 
 _lock = threading.Lock()                     # tool batches run on a thread pool
 _failures: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: defaultdict(int))

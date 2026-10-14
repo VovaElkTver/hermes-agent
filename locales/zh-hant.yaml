@@ -129,6 +129,17 @@ gateway:
     branched_thread_one: "⑂ 已在新討論串中分支到 **{title}**（已複製 {count} 則訊息）\n討論串：{thread}\n原始：`{parent}` — 本聊天保持在原會話\n分支：`{new}`\n使用 `/branch --here` 可在本聊天中分支。"
     branched_thread_many: "⑂ 已在新討論串中分支到 **{title}**（已複製 {count} 則訊息）\n討論串：{thread}\n原始：`{parent}` — 本聊天保持在原會話\n分支：`{new}`\n使用 `/branch --here` 可在本聊天中分支。"
     thread_fallback: "此處無法建立討論串，因此分支取代了本聊天的會話。"
+  fork:
+    created: "⑂ 已分叉：**{title}**（惰性分支 `{branch}`，與 `{parent}` 共享歷史）\n分叉工作階段：`{new}`\n用 `/join {branch}` 合併回來，用 `/branch` 完整複製。"
+    no_conversation: "沒有可分叉的內容——上層工作階段尚無訊息。"
+    create_failed: "建立分叉失敗：{error}"
+  join:
+    none_active: "此工作階段沒有作用中的分叉分支。用 /fork 建立一個。"
+    not_found: "沒有該作用中分支：{arg}。執行 /join 檢視分支清單。"
+    ambiguous: "存在多個作用中分支，請指定一個：{branches}"
+    append_unavailable: "--append 僅在分枝點之後的上層尾部未壓縮時可用；對 {branch} 請使用預設的工作記錄合併。"
+    joined: "✓ 已合併分支 {branch}（{strategy}）。"
+    db_unavailable: "工作階段資料庫不可用。"
   commands:
     usage: "用法：`/commands [page]`"
     skill_header: "⚡ **技能指令**："
@@ -1518,6 +1529,10 @@ slash:
     description: "將此工作階段移交到訊息平台（Telegram、Discord 等）"
   branch:
     description: "分支目前工作階段（在 Discord/Telegram/Slack/Matrix 開新討論串；--here 留在原處）"
+  fork:
+    description: "將對話分叉為共享歷史的惰性分支（用 /join 合併）"
+  join:
+    description: "將分叉分支合併回此工作階段（預設：工作記錄摘要）"
   worktree:
     description: "顯示、列出、建立或清理隔離的 git 工作樹"
   compress:

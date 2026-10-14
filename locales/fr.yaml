@@ -155,6 +155,17 @@ gateway:
     branched_thread_one: "⑂ Branché vers **{title}** dans un nouveau fil ({count} message copié)\nFil : {thread}\nOriginal : `{parent}` — cette discussion y reste\nBranche : `{new}`\nUtilisez `/branch --here` pour brancher dans cette discussion."
     branched_thread_many: "⑂ Branché vers **{title}** dans un nouveau fil ({count} messages copiés)\nFil : {thread}\nOriginal : `{parent}` — cette discussion y reste\nBranche : `{new}`\nUtilisez `/branch --here` pour brancher dans cette discussion."
     thread_fallback: "Aucun fil n'a pu être créé ici, la branche a donc remplacé la session de cette discussion."
+  fork:
+    created: "⑂ Fork créé : **{title}** (branche paresseuse `{branch}`, historique partagé avec `{parent}`)\nSession du fork : `{new}`\nUtilisez `/join {branch}` pour fusionner, `/branch` pour une copie complète."
+    no_conversation: "Rien à forker — le parent n'a pas encore de messages."
+    create_failed: "Échec de création du fork : {error}"
+  join:
+    none_active: "Aucune branche de fork active dans cette session. Lancez-en une avec /fork."
+    not_found: "Aucune branche active de ce nom : {arg}. Lancez /join pour lister les branches."
+    ambiguous: "Plusieurs branches actives, précisez : {branches}"
+    append_unavailable: "--append n'est possible que si la queue du parent après le point de branchement n'est pas compressée ; utilisez la jointure par note de travail pour {branch}."
+    joined: "✓ Branche {branch} fusionnée ({strategy})."
+    db_unavailable: "Base de données des sessions indisponible."
   commands:
     usage: "Utilisation : `/commands [page]`"
     skill_header: "⚡ **Commandes de skill** :"
@@ -1770,6 +1781,10 @@ slash:
     description: "Transférer cette session vers une plateforme de messagerie (Telegram, Discord, etc.)"
   branch:
     description: "Créer une branche de la session en cours (nouveau fil sur Discord/Telegram/Slack/Matrix ; --here reste ici)"
+  fork:
+    description: "Forker la conversation en branche paresseuse à historique partagé (fusionner avec /join)"
+  join:
+    description: "Fusionner une branche de fork dans cette session (défaut : résumé en note de travail)"
   worktree:
     description: "Afficher, lister, créer ou nettoyer des worktrees git isolés"
   compress:

@@ -129,6 +129,17 @@ gateway:
     branched_thread_one: "⑂ 新しいスレッドで **{title}** に分岐しました（{count} 件のメッセージをコピー）\nスレッド: {thread}\n元: `{parent}` — このチャットは元のまま\n分岐: `{new}`\nこのチャット内で分岐するには `/branch --here` を使用してください。"
     branched_thread_many: "⑂ 新しいスレッドで **{title}** に分岐しました（{count} 件のメッセージをコピー）\nスレッド: {thread}\n元: `{parent}` — このチャットは元のまま\n分岐: `{new}`\nこのチャット内で分岐するには `/branch --here` を使用してください。"
     thread_fallback: "ここではスレッドを作成できなかったため、分岐がこのチャットのセッションを置き換えました。"
+  fork:
+    created: "⑂ フォーク作成：**{title}**（遅延ブランチ `{branch}`、`{parent}` と履歴を共有）\nフォークセッション：`{new}`\n`/join {branch}` で統合、`/branch` で完全コピー。"
+    no_conversation: "フォークするものがありません — 親セッションにまだメッセージがありません。"
+    create_failed: "フォークを作成できませんでした: {error}"
+  join:
+    none_active: "このセッションにアクティブなフォークブランチはありません。/fork で作成してください。"
+    not_found: "そのようなアクティブなブランチはありません：{arg}。/join で一覧を表示。"
+    ambiguous: "アクティブなブランチが複数あります。1つ指定してください：{branches}"
+    append_unavailable: "--append は分岐点以降の親テールが未圧縮のあいだのみ利用可能です。{branch} はデフォルトの作業ノート join を使ってください。"
+    joined: "✓ ブランチ {branch} を結合しました（{strategy}）。"
+    db_unavailable: "セッションデータベースを利用できません。"
   commands:
     usage: "使い方: `/commands [page]`"
     skill_header: "⚡ **スキルコマンド**:"
@@ -1518,6 +1529,10 @@ slash:
     description: "このセッションをメッセージングプラットフォーム（Telegram、Discord など）に引き継ぐ"
   branch:
     description: "現在のセッションを分岐（Discord/Telegram/Slack/Matrix では新しいスレッド。--here でここに留まる）"
+  fork:
+    description: "会話を履歴共有の遅延ブランチにフォーク（/join で統合）"
+  join:
+    description: "フォークブランチをこのセッションに統合（デフォルトは作業ノート要約）"
   worktree:
     description: "分離された git worktree の表示、一覧、作成、または削除"
   compress:

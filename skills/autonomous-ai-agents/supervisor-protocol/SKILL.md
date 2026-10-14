@@ -1,13 +1,14 @@
 ---
 name: supervisor-protocol
-description: >-
-  Use when a tool result or steer message is tagged [supervisor]. Defines the
-  supervisor-protocol contract: gate blocks, annotations, steers, escalations.
+description: "Use when a tool result or steer is tagged [supervisor]."
 version: 1.0.0
 author: hermes
 license: MIT
+platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [autonomy, protocol]
 ---
-
 # Supervisor protocol (child-side contract)
 
 When the supervisor plugin is enabled, delegated children (and their

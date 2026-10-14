@@ -64,7 +64,7 @@ def test_workers_history_shape_reaches_http(env, monkeypatch):
         seen['history'] = history
         return {"verdict": "pass", "reason": "fine", "instruction": "", "degraded": False}
     monkeypatch.setattr(j, "review", fake)
-    c, wd, _ = env
+    c, _wd, _ = env
     rv = make_review(c, judge_cfg={"model": "x"})
     out = rv({"run_id": "r"}, {"step_id": "s", "title": "do"},
              [{"stdout_tail": "tail", "returncode": 0}])
@@ -77,7 +77,7 @@ def test_review_fail_closed_on_reasoning_truncation(env):
     finish_reason='length', content='' -> empty-completion degraded must fire (was the
     silent needs_human loop that stalled both live tasks)."""
     import json, urllib.request
-    c, wd, _ = env
+    _c, _wd, _ = env
 
     class Resp:
         def read(self): return json.dumps(
@@ -109,13 +109,13 @@ def test_worker_nonzero_exit_is_failed(env, tmp_path):
 
 
 def test_review_without_judge_is_needs_human(env):
-    c, wd, _ = env
+    c, _wd, _ = env
     rv = make_review(c, judge_cfg=None)
     assert rv({"run_id": "r"}, {"step_id": "s"}, [])["verdict"] == "needs_human"
 
 
 def test_review_fail_closed_on_judge_error(env, monkeypatch):
-    c, wd, _ = env
+    c, _wd, _ = env
     import plugins.supervisor.judge as j
     def boom(*a, **k):
         raise RuntimeError("judge down")
@@ -127,7 +127,7 @@ def test_review_fail_closed_on_judge_error(env, monkeypatch):
 
 def test_review_fail_closed_on_failopen_judge_pass(env, monkeypatch):
     """judge.review fails OPEN for checkpoints; completion must not inherit that."""
-    c, wd, _ = env
+    c, _wd, _ = env
     import plugins.supervisor.judge as j
     monkeypatch.setattr(j, "review", lambda *a, **k: {
         "verdict": "pass", "reason": "judge unavailable: KeyError", "instruction": ""})
@@ -140,7 +140,7 @@ def test_review_fail_closed_on_empty_completion(env):
     """Review finding hole A: HTTP alive but completion unparsable -> judge.py defaults
     to pass; degraded flag must catch it (empty/garbage content, missing field)."""
     import json, urllib.request
-    c, wd, _ = env
+    c, _wd, _ = env
 
     class Resp:
         def __init__(self, payload): self._p = payload
@@ -166,7 +166,7 @@ def test_review_fail_closed_on_empty_completion(env):
 
 
 def test_review_gate_rejects_pass_when_worker_failed(env, monkeypatch):
-    c, wd, _ = env
+    c, _wd, _ = env
     import plugins.supervisor.judge as j
     monkeypatch.setattr(j, "review", lambda *a, **k: {"verdict": "pass", "reason": "lgtm"})
     rv = make_review(c, judge_cfg={"model": "x"})
