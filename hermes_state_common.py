@@ -649,6 +649,27 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+-- Durable pending approvals (#133514, VovaElkTver fork): approvals raised by a
+-- detached child after its parent's turn ended. The legacy in-process
+-- ``tools/approval._pending`` dict had no reader; rows here are answerable via
+-- /approve //deny until TTL-expiry or session teardown. Shape MUST stay
+-- identical to tools/approval_ledger.py _SCHEMA (#94691 lesson).
+CREATE TABLE IF NOT EXISTS pending_approvals (
+    approval_id TEXT PRIMARY KEY,
+    session_key TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    resolution TEXT,
+    resolved_at REAL,
+    reason TEXT,
+    command TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    pattern_key TEXT NOT NULL DEFAULT '',
+    extra_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_pending_approvals_lookup
+    ON pending_approvals(session_key, state, created_at);
 -- ---- controller (managed autonomy; VovaElkTver fork, off by default) ----------
 -- Durable task/contract/run state per the managed-autonomy spec. ctl_ prefix avoids
 -- collisions with session tables. Task.state and Run.run_status are SEPARATE: a task
