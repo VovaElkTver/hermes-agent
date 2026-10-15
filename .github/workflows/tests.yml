@@ -138,6 +138,9 @@ jobs:
             --ignore=tests/hermes_cli/test_shared_metrics_install_run.py \
             --ignore=tests/ci/test_desktop_bundle_smoke.py \
             --ignore=tests/hermes_cli/test_bundled_desktop_launch.py \
+            --ignore=tests/hermes_cli/test_desktop_update_verify.py \
+            --ignore=tests/hermes_cli/test_source_build.py \
+            --ignore=tests/hermes_cli/test_desktop_source_build.py \
             --ignore=tests/ci/test_channel_build_publication.py \
             --ignore=tests/ci/test_prompt_surface.py \
             --ignore=tests/hermes_cli/test_desktop_slash_registry.py \
@@ -222,7 +225,7 @@ jobs:
         # run 38692994701 (they are deterministic on a clean hosted image).
         run: scripts/run_tests.sh
         env:
-          HERMES_TEST_PATHS: tests/hermes_state:tests/scripts:tests/plugins/platforms/photon:tests/hermes_cli/test_tui_npm_install.py:tests/hermes_cli/test_web_ui_build.py:tests/hermes_cli/test_update_finish.py:tests/hermes_cli/test_shared_metrics_install_run.py:tests/ci/test_desktop_bundle_smoke.py:tests/hermes_cli/test_bundled_desktop_launch.py:tests/ci/test_channel_build_publication.py:tests/ci/test_prompt_surface.py:tests/hermes_cli/test_desktop_slash_registry.py:tests/hermes_cli/test_doctor.py:tests/hermes_cli/test_doctor_journal_modes.py:tests/hermes_cli/test_doctor_wal_checkpoint_guard.py:tests/hermes_cli/test_sessions_delete.py:tests/hermes_cli/test_sessions_held_store_gate.py:tests/hermes_cli/test_sessions_set_journal_mode.py:tests/hermes_cli/test_model_validation.py:tests/hermes_cli/test_git_pack_tidy.py:tests/tools/test_browser_camofox.py:tests/tools/test_subprocess_stdin_guard.py:tests/website/test_extract_plugins.py:tests/gateway/test_session_api.py
+          HERMES_TEST_PATHS: tests/hermes_state:tests/scripts:tests/plugins/platforms/photon:tests/hermes_cli/test_tui_npm_install.py:tests/hermes_cli/test_web_ui_build.py:tests/hermes_cli/test_update_finish.py:tests/hermes_cli/test_shared_metrics_install_run.py:tests/ci/test_desktop_bundle_smoke.py:tests/hermes_cli/test_bundled_desktop_launch.py:tests/hermes_cli/test_desktop_update_verify.py:tests/hermes_cli/test_source_build.py:tests/hermes_cli/test_desktop_source_build.py:tests/ci/test_channel_build_publication.py:tests/ci/test_prompt_surface.py:tests/hermes_cli/test_desktop_slash_registry.py:tests/hermes_cli/test_doctor.py:tests/hermes_cli/test_doctor_journal_modes.py:tests/hermes_cli/test_doctor_wal_checkpoint_guard.py:tests/hermes_cli/test_sessions_delete.py:tests/hermes_cli/test_sessions_held_store_gate.py:tests/hermes_cli/test_sessions_set_journal_mode.py:tests/hermes_cli/test_model_validation.py:tests/hermes_cli/test_git_pack_tidy.py:tests/tools/test_browser_camofox.py:tests/tools/test_subprocess_stdin_guard.py:tests/website/test_extract_plugins.py:tests/gateway/test_session_api.py
           HERMES_TEST_WORKERS: 4
           HERMES_TEST_FILE_TIMEOUT: 600
           OPENROUTER_API_KEY: ""

@@ -43,7 +43,7 @@ def check_tmux_available() -> tuple[bool, str]:
     """(ok, detail). Called at registration; also surfaced in tool errors."""
     try:
         r = subprocess.run(["tmux", "-V"], capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=5, check=False)
+                       errors="replace", timeout=5, check=False, stdin=subprocess.DEVNULL)
         if r.returncode != 0:
             return False, f"tmux binary exists but 'tmux -V' failed rc={r.returncode}"
         return True, r.stdout.strip()

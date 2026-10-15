@@ -104,8 +104,12 @@ After difficult/iterative tasks, offer to save as a skill. If a skill you loaded
     - claude-code: Delegate coding to Claude Code CLI (features, PRs).
     - codex: Delegate coding to OpenAI Codex CLI (features, PRs).
     - computer-use: Drive the desktop background-first; escalate on signal.
+    - controller-protocol: Use on [controller] tags or autonomy commands (go/pause).
+    - guardrails-protocol: Use when fork-guardrails blocks or approves a tool call.
     - hermes-agent: Use, configure, theme, extend, and orchestrate Hermes Agent.
+    - install-fork-agent: Install or update the VovaElkTver Hermes fork on a host.
     - opencode: Delegate coding to OpenCode CLI (features, PR review).
+    - supervisor-protocol: Use when a tool result or steer is tagged [supervisor].
   creative: Creative content generation — ASCII art, hand-drawn style diagrams, and visual design tools.
     - architecture-diagram: Dark-themed SVG architecture/cloud/infra diagrams as HTML.
     - ascii-video: ASCII video: convert video/audio to colored ASCII MP4/GIF.
