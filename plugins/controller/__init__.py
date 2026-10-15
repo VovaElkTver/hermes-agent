@@ -185,6 +185,15 @@ def register(ctx):
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("post_llm_call", _on_post_llm_call)
+    try:
+        from . import agent_tools
+        for _name, _schema, _handler in agent_tools.tool_defs():
+            ctx.register_tool(name=_name, toolset="controller", schema=_schema,
+                              handler=_handler, emoji=agent_tools.EMOJI,
+                              check_fn=_enabled)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("controller: agent tools registration failed: %s", exc,
+                       exc_info=True)
     if _enabled():
         logger.info("controller: managed autonomy enabled (flag on)")
         try:

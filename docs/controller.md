@@ -30,6 +30,19 @@
 inter-task события §24–26 кроме run_finished, корректировка worker без пересогласования §32,
 денежные бюджеты, kanban-проекция (колонка ctl_task.kanban_ref подготовлена).
 
+## Инструменты агента (tool surface)
+Пассивный слой (хуки+skill) запрещает лишнее; инструменты дают здоровому агенту
+работать с контроллером самому, без raw-SQL догадок. Регистрируются плагином
+controller, видны только при `controller.enabled` (check_fn). Все идут через
+controller.model / controller.transitions — одна authoritative точка:
+- `ctl_status` — очередь (tasks+epoch) или разбор одной задачи (steps, контракт, события).
+- `ctl_enqueue` — ПРЕДЛОЖЕНИЕ задачи: draft + несогласованный MATERIAL-контракт,
+  pump не диспатчит до человеческого «иди». Enqueue никогда не стартует сам.
+- `ctl_step_done` — закрытие шага с read-back: результат = фактически хранящийся
+  статус, «done» не предполагается.
+- `ctl_block` — running→blocked через audited transition (запрещённые переходы
+  отклоняются), причина — в ctl_event.
+
 ## Отключение
 Снять флаг + убрать controller из plugins.enabled. Ничто кроме controller/ не читает ctl_*;
 таблицы можно удалить вручную (DROP TABLE ctl_*), данные sessions/triggers не затронуты.
