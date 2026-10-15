@@ -33,8 +33,17 @@ _TMUX_TIMEOUT = 15  # seconds for control-plane tmux calls themselves
 
 
 def _socket_path() -> str:
-    from hermes_cli.config import get_hermes_home
-    d = Path(get_hermes_home()) / SOCKET_DIR_NAME
+    # HERMES_TMUX_SOCK_ROOT pins the socket directory for sandboxes whose
+    # home is deeper than AF_UNIX's sun_path (108 bytes) allows — CI pytest
+    # roots under /var/tmp/hermes-pytest-<uid>/ reach 130+. Unset in normal
+    # operation; the default below is untouched production behaviour.
+    env = os.environ.get("HERMES_TMUX_SOCK_ROOT")
+    if env:
+        d = Path(env)
+    else:
+        from hermes_cli.config import get_hermes_home
+
+        d = Path(get_hermes_home()) / SOCKET_DIR_NAME
     d.mkdir(parents=True, exist_ok=True)
     return str(d / "hermes.sock")
 

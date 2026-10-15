@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -19,6 +20,10 @@ import pytest
 
 _PLUGIN = Path(__file__).resolve().parents[2] / "plugins" / "tmux-session"
 TMP_DIR = Path("/tmp/tmux-session-tests")
+# Keep the tmux socket off the pytest sandbox path: AF_UNIX sun_path caps at
+# 108 bytes and CI basetemps (which the plugin derives HERMES_HOME from) can
+# exceed that. Production keeps the socket under HERMES_HOME.
+os.environ.setdefault("HERMES_TMUX_SOCK_ROOT", str(TMP_DIR / "sock"))
 
 
 def _load_core():
