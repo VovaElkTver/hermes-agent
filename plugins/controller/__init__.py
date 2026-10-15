@@ -192,7 +192,8 @@ def register(ctx):
                               handler=_handler, emoji=agent_tools.EMOJI,
                               check_fn=_enabled)
     except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("controller: agent tools registration failed: %s", exc)
+        logger.warning("controller: agent tools registration failed: %s", exc,
+                       exc_info=True)
     if _enabled():
         logger.info("controller: managed autonomy enabled (flag on)")
         try:
