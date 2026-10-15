@@ -116,3 +116,63 @@ def test_tool_defs_shape():
         assert schema["parameters"]["type"] == "object"
         if name == "ctl_enqueue":
             assert set(schema["parameters"]["required"]) == {"goal", "workdir"}
+
+
+def test_status_snapshot_truncation_and_as_of(tools):
+    at, _conn, _model, wd = tools
+    for i in range(52):
+        _call(at.ctl_enqueue, goal=f"g{i}", workdir=str(wd))
+    snap = _call(at.ctl_status)
+    assert snap["ok"] and len(snap["tasks"]) == 50 and snap["has_more"] is True
+    assert snap["as_of"].endswith("Z")
+    # instruction tool: no page cursors in the surface at all
+    props = next(s["parameters"]["properties"]
+                 for n, s, _h in at.tool_defs() if n == "ctl_status")
+    assert set(props) == {"task_id", "workdir"}
+    few = _call(at.ctl_status, workdir=str(wd) + "/other")
+    assert few["ok"] and few["tasks"] == [] and few["has_more"] is False
+
+
+def test_step_done_precondition(tools):
+    at, conn, model, wd = tools
+    tid = model.create_task(conn, owner="v", workdir=str(wd), goal="g")
+    sid = model.add_step(conn, tid, "implementation", "code")
+    assert _call(at.ctl_step_done, step_id=sid)["ok"]
+    again = _call(at.ctl_step_done, step_id=sid)
+    assert not again["ok"] and again["stored"] == "done" and again["expected"] == "pending"
+    assert "precondition failed" in again["error"] and "ctl_status" in again["error"]
+    assert conn.execute("SELECT status FROM ctl_step WHERE step_id=?",
+                        (sid,)).fetchone()["status"] == "done"
+    bad = _call(at.ctl_step_done, step_id=sid, expected_status="pendig")
+    assert not bad["ok"] and "pending, done, blocked, failed" in bad["error"]
+    forced = _call(at.ctl_step_done, step_id=sid, expected_status="done")
+    assert forced["ok"] and forced["status"] == "done"
+
+
+def test_read_only_declaration_semantics():
+    import plugins.controller.agent_tools as at
+    assert at.is_read_only("ctl_status") is True
+    assert at.is_read_only("ctl_enqueue") is False
+    assert at.is_read_only("some_other_tool") is False
+
+
+def test_barrier_read_only_passthrough(tools, monkeypatch):
+    """When the dispatch barrier blocks, declared read-only tools still pass —
+    TOOL_META has a real consumer (controller hook), not just tests."""
+    import importlib.util
+    _at, conn, _model, _wd = tools
+    spec = importlib.util.spec_from_file_location(
+        "ctl_plugin_under_test", "plugins/controller/__init__.py",
+        submodule_search_locations=["plugins/controller"])
+    plug = importlib.util.module_from_spec(spec)
+    import sys
+    sys.modules[spec.name] = plug
+    spec.loader.exec_module(plug)
+    from controller import barrier
+    monkeypatch.setattr(plug, "_enabled", lambda: True)
+    monkeypatch.setattr(plug, "_origin_of", lambda *a, **k: "autonomous")
+    monkeypatch.setattr(plug, "_db", lambda: conn)
+    monkeypatch.setattr(barrier, "check", lambda *a, **k: (False, "epoch stale"))
+    assert plug._on_pre_tool_call("ctl_status", task_id="", session_id="s1") is None
+    blocked = plug._on_pre_tool_call("terminal", task_id="", session_id="s1")
+    assert blocked["action"] == "block" and "epoch stale" in blocked["message"]

@@ -53,6 +53,13 @@ def _db():
 
 # ---- dispatch barrier --------------------------------------------------------
 
+def _default_scope() -> str:
+    """Fallback queue scope when a session was never registered by the
+    dispatcher: the process working directory (tasks are queued per workdir)."""
+    from pathlib import Path
+    return str(Path.cwd().resolve())
+
+
 def _origin_of(task_id: str, session_id: str) -> str:
     """Children spawned through delegate_task are the autonomous origin; operator
     sessions are interactive. supervisor's registry is the tag source (Q4 decision)."""
@@ -77,6 +84,11 @@ def _on_pre_tool_call(tool_name: str = "", args: dict | None = None, task_id: st
         task_id_ctl = kw.get("controller_task_id") or _task_for_scope(_db(), scope)
         ok, why = barrier.check(_db(), scope=scope, origin=origin, task_id=task_id_ctl)
         if not ok:
+            from . import agent_tools
+            if agent_tools.is_read_only(tool_name):
+                # Declared read-only tools survive a blocked dispatch: looking at
+                # the queue is the recovery path when autonomy is paused/stale.
+                return None
             return {"action": "block",
                     "message": f"[controller] autonomous dispatch blocked: {why}"}
     except Exception as exc:
