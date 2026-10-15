@@ -39,10 +39,11 @@ jobs:
     # scale linearly. run_tests_parallel.py partitions from the checkout alone, so
     # both slices agree on the split without a planning job.
     name: Run tests (${{ matrix.slice }}/2)
-    runs-on: ubuntu-latest
-    # Fork note: upstream runs this on a 32-core larger runner (~10 min); the free
-    # 4-vCPU image needs roughly 6-8x that wall time. Raise matrix slice count
-    # before lowering this again.
+    runs-on: [self-hosted, elk-ci]
+    # Fork note: ci-debt2/3 — shards moved to the self-hosted elk-ci runner (.100,
+    # 64 cores) because the free 4-vCPU hosted image starves timing-sensitive tests
+    # into chronic flakes (main itself goes red on it). Windows jobs stay hosted.
+    # Rollback = set runs-on back to ubuntu-latest.
     timeout-minutes: 150
     strategy:
       fail-fast: false
@@ -106,8 +107,22 @@ jobs:
         #
         # No --files: the runner discovers the suite itself. The discovered
         # set is identical to the list the removed matrix job used to pass in.
+        #
+        # elk100-ci scope (measured, PR #34 first run): the self-hosted runner
+        # is a busy shared host — a live hermes gateway and other users'
+        # state.db exist on it. Host-state-sensitive suites (hermes_state
+        # holder/repair scanning, source-driver, photon watchdog, npm/web
+        # builds) pass on clean hosted images but fail on any busy machine;
+        # they run in test-host-sensitive below. Everything else — the
+        # time-starvation class that flakes on 4-vCPU hosted images — is
+        # green here.
         run: |
-          scripts/run_tests.sh
+          scripts/run_tests.sh \
+            --ignore tests/hermes_state \
+            --ignore tests/scripts \
+            --ignore tests/plugins/platforms/photon \
+            --ignore tests/hermes_cli/test_tui_npm_install.py \
+            --ignore tests/hermes_cli/test_web_ui_build.py
         env:
           HERMES_TEST_SLICE: ${{ matrix.slice }}/2
           HERMES_TEST_WORKERS: 32
@@ -134,6 +149,52 @@ jobs:
         # every earlier step passed: a step that failed midway can leave its own temp files
         # (a half-extracted download, a worktree its later cleanup never removed).
         uses: ./.github/actions/check-clean-worktree
+
+  test-host-sensitive:
+    # Suites that inspect the HOST machine, not just the checkout:
+    # hermes_state holder/repair scans (they enumerate live state.db holders
+    # and resident gateway processes system-wide), scripts source-driver,
+    # photon stream watchdog, npm/web-UI build tests. These are deterministic
+    # on a clean hosted image and structurally unsafe on a busy self-hosted
+    # host (see the elk100-ci scope note in `test`). Evidence: PR #34 first
+    # elk100 run — 192 failures here, zero overlap with the hosted flakes.
+    name: Run tests (host-sensitive)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL --retry 3 --retry-delay 5 -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          rg --version
+
+      - name: Set up locked Python and test dependencies
+        uses: ./.github/actions/setup-pm
+        with:
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          test-environment: 'true'
+          prune-python-cache: true
+
+      - name: Run host-sensitive suites
+        run: scripts/run_tests.sh
+        env:
+          HERMES_TEST_PATHS: tests/hermes_state:tests/scripts:tests/plugins/platforms/photon:tests/hermes_cli/test_tui_npm_install.py:tests/hermes_cli/test_web_ui_build.py
+          HERMES_TEST_WORKERS: 4
+          HERMES_TEST_FILE_TIMEOUT: 600
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
 
   e2e:
     # The core suites spawn real serve / gateway / tui_gateway / MCP / SQLite
