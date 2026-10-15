@@ -115,14 +115,16 @@ jobs:
         # builds) pass on clean hosted images but fail on any busy machine;
         # they run in test-host-sensitive below. Everything else — the
         # time-starvation class that flakes on 4-vCPU hosted images — is
-        # green here.
+        # green here. NOTE: `=`-joined ignore form — the runner's bare-flag
+        # forwarder only keeps space-separated values for PYTEST_VALUE_FLAGS
+        # short flags, so `--ignore X` would split X into a discovery path.
         run: |
           scripts/run_tests.sh \
-            --ignore tests/hermes_state \
-            --ignore tests/scripts \
-            --ignore tests/plugins/platforms/photon \
-            --ignore tests/hermes_cli/test_tui_npm_install.py \
-            --ignore tests/hermes_cli/test_web_ui_build.py
+            --ignore=tests/hermes_state \
+            --ignore=tests/scripts \
+            --ignore=tests/plugins/platforms/photon \
+            --ignore=tests/hermes_cli/test_tui_npm_install.py \
+            --ignore=tests/hermes_cli/test_web_ui_build.py
         env:
           HERMES_TEST_SLICE: ${{ matrix.slice }}/2
           HERMES_TEST_WORKERS: 32
