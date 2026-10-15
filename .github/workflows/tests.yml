@@ -118,13 +118,41 @@ jobs:
         # green here. NOTE: `=`-joined ignore form — the runner's bare-flag
         # forwarder only keeps space-separated values for PYTEST_VALUE_FLAGS
         # short flags, so `--ignore X` would split X into a discovery path.
+        #
+        # The second ignore block is per-file, measured on the first split
+        # main run (38692994701): node-dependent suites (update-finish,
+        # shared-metrics install, desktop bundle/launch, channel-build —
+        # .100 has no node on PATH), live-state suites (doctor/sessions see
+        # the resident gateway and its WAL guards; camofox hits a service
+        # already on :19999), and repo-scan suites that disagree with a busy
+        # host (prompt-surface, slash-registry staleness, plugins extract,
+        # stdin-guard, git-pack-tidy, session-api).
         run: |
           scripts/run_tests.sh \
             --ignore=tests/hermes_state \
             --ignore=tests/scripts \
             --ignore=tests/plugins/platforms/photon \
             --ignore=tests/hermes_cli/test_tui_npm_install.py \
-            --ignore=tests/hermes_cli/test_web_ui_build.py
+            --ignore=tests/hermes_cli/test_web_ui_build.py \
+            --ignore=tests/hermes_cli/test_update_finish.py \
+            --ignore=tests/hermes_cli/test_shared_metrics_install_run.py \
+            --ignore=tests/ci/test_desktop_bundle_smoke.py \
+            --ignore=tests/hermes_cli/test_bundled_desktop_launch.py \
+            --ignore=tests/ci/test_channel_build_publication.py \
+            --ignore=tests/ci/test_prompt_surface.py \
+            --ignore=tests/hermes_cli/test_desktop_slash_registry.py \
+            --ignore=tests/hermes_cli/test_doctor.py \
+            --ignore=tests/hermes_cli/test_doctor_journal_modes.py \
+            --ignore=tests/hermes_cli/test_doctor_wal_checkpoint_guard.py \
+            --ignore=tests/hermes_cli/test_sessions_delete.py \
+            --ignore=tests/hermes_cli/test_sessions_held_store_gate.py \
+            --ignore=tests/hermes_cli/test_sessions_set_journal_mode.py \
+            --ignore=tests/hermes_cli/test_model_validation.py \
+            --ignore=tests/hermes_cli/test_git_pack_tidy.py \
+            --ignore=tests/tools/test_browser_camofox.py \
+            --ignore=tests/tools/test_subprocess_stdin_guard.py \
+            --ignore=tests/website/test_extract_plugins.py \
+            --ignore=tests/gateway/test_session_api.py
         env:
           HERMES_TEST_SLICE: ${{ matrix.slice }}/2
           HERMES_TEST_WORKERS: 32
@@ -189,14 +217,20 @@ jobs:
           prune-python-cache: true
 
       - name: Run host-sensitive suites
+        # Full inventory: directories whose suites scan the live host plus the
+        # per-file node/live-state/scan suites measured on first split main
+        # run 38692994701 (they are deterministic on a clean hosted image).
         run: scripts/run_tests.sh
         env:
-          HERMES_TEST_PATHS: tests/hermes_state:tests/scripts:tests/plugins/platforms/photon:tests/hermes_cli/test_tui_npm_install.py:tests/hermes_cli/test_web_ui_build.py
+          HERMES_TEST_PATHS: tests/hermes_state:tests/scripts:tests/plugins/platforms/photon:tests/hermes_cli/test_tui_npm_install.py:tests/hermes_cli/test_web_ui_build.py:tests/hermes_cli/test_update_finish.py:tests/hermes_cli/test_shared_metrics_install_run.py:tests/ci/test_desktop_bundle_smoke.py:tests/hermes_cli/test_bundled_desktop_launch.py:tests/ci/test_channel_build_publication.py:tests/ci/test_prompt_surface.py:tests/hermes_cli/test_desktop_slash_registry.py:tests/hermes_cli/test_doctor.py:tests/hermes_cli/test_doctor_journal_modes.py:tests/hermes_cli/test_doctor_wal_checkpoint_guard.py:tests/hermes_cli/test_sessions_delete.py:tests/hermes_cli/test_sessions_held_store_gate.py:tests/hermes_cli/test_sessions_set_journal_mode.py:tests/hermes_cli/test_model_validation.py:tests/hermes_cli/test_git_pack_tidy.py:tests/tools/test_browser_camofox.py:tests/tools/test_subprocess_stdin_guard.py:tests/website/test_extract_plugins.py:tests/gateway/test_session_api.py
           HERMES_TEST_WORKERS: 4
           HERMES_TEST_FILE_TIMEOUT: 600
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+
+      - name: Check the checkout is clean
+        uses: ./.github/actions/check-clean-worktree
 
   e2e:
     # The core suites spawn real serve / gateway / tui_gateway / MCP / SQLite
