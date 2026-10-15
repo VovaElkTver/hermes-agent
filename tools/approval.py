@@ -148,20 +148,20 @@ def resolve_gateway_approval(session_key: str, choice: str,
     """
     with _lock:
         queue = _gateway_queues.get(session_key)
-        if not queue:
-            return 0
-        if request_id:
-            targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
-            if not targets:
-                return 0
-            queue[:] = [entry for entry in queue if entry not in targets]
-        elif resolve_all:
-            targets = list(queue)
-            queue.clear()
-        else:
-            targets = [queue.pop(0)]
-        if not queue:
-            _gateway_queues.pop(session_key, None)
+        targets: list = []
+        if queue:
+            if request_id:
+                targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
+                if targets:
+                    queue[:] = [entry for entry in queue if entry not in targets]
+                # no live match → fall through to the durable ledger below
+            elif resolve_all:
+                targets = list(queue)
+                queue.clear()
+            else:
+                targets = [queue.pop(0)]
+            if not queue:
+                _gateway_queues.pop(session_key, None)
         # Popping the entry and committing its outcome are ONE critical section: the waiter's
         # ``_drop_entry`` reads ``entry.result`` under this same lock after its deadline check, so a
         # choice acked to the client here can never be popped-and-lost as a timeout (#112548).
@@ -170,7 +170,20 @@ def resolve_gateway_approval(session_key: str, choice: str,
             if reason:
                 entry.reason = reason
             entry.event.set()
-    return len(targets)
+        live = len(targets)
+    # Durable rows (#133514): answer detached-child requests the live queue
+    # never held. Approved "session"/"always" choices pre-approve the pattern
+    # for the session so the parent's re-run passes the gate without a second
+    # card; "once" stays single-use (the re-run will ask again, as designed).
+    from tools.approval_ledger import resolve_pending
+
+    durable = resolve_pending(session_key, choice, resolve_all=resolve_all,
+                              reason=reason, request_id=request_id)
+    if durable and choice in ("session", "always"):
+        for row in durable:
+            if row.get("pattern_key"):
+                approve_session(session_key, row["pattern_key"])
+    return live + len(durable)
 
 
 def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:
@@ -218,33 +231,63 @@ def ack_gateway_approval(session_key: str, request_id: str) -> bool:
 
 
 def has_blocking_approval(session_key: str) -> bool:
-    """Check if a session has one or more blocking gateway approvals waiting."""
+    """Check if a session has one or more blocking gateway approvals waiting.
+
+    Durable ledger rows count too (#133514): a detached child's request has
+    no blocked thread, but it IS answerable — /approve must not be told
+    "no pending" while a real request sits in state.db.
+    """
     with _lock:
-        return bool(_gateway_queues.get(session_key))
+        if _gateway_queues.get(session_key):
+            return True
+    from tools.approval_ledger import pending_count
+
+    return pending_count(session_key) > 0
 
 
 def pending_gateway_approval_count() -> int:
     """Unresolved gateway approvals across every session — a backend blocked on one is not idle."""
     with _lock:
-        return sum(len(queue) for queue in _gateway_queues.values())
+        total = sum(len(queue) for queue in _gateway_queues.values())
+    from tools.approval_ledger import pending_count
+
+    return total + pending_count(None)
 
 
 def get_pending_gateway_approval(session_key: str) -> dict | None:
     """Copy of the oldest unresolved gateway approval, for reconnecting clients
-    to restore a prompt. Read-only snapshot — the queue stays authoritative."""
+    to restore a prompt. Read-only snapshot — the queue stays authoritative.
+    Falls back to the durable ledger when the live queue is empty (#133514)."""
     if not session_key:
         return None
     with _lock:
         queue = _gateway_queues.get(session_key)
-        if not queue:
-            return None
-        return dict(queue[0].data)
+        if queue:
+            return dict(queue[0].data)
+    from tools.approval_ledger import list_pending
+
+    rows = list_pending(session_key)
+    if not rows:
+        return None
+    row = rows[0]
+    return {"command": row["command"], "description": row["description"],
+            "pattern_key": row["pattern_key"], "request_id": row["approval_id"],
+            "durable": True}
 
 
 def submit_pending(session_key: str, approval: dict):
-    """Store a pending approval request for a session."""
+    """Store a pending approval request for a session.
+
+    The dict stays as the in-process cache; the durable ledger (when
+    enabled) is what makes a detached child's request survive turn end and
+    answerable via /approve /deny (#133514). The dict's one-slot-per-session
+    overwrite remains — fixing the dead-letter is the ledger's job, not the
+    cache's."""
     with _lock:
         _pending[session_key] = approval
+    from tools.approval_ledger import record_pending
+
+    record_pending(session_key, approval)
 
 
 def approve_session(session_key: str, pattern_key: str):
@@ -284,9 +327,14 @@ def disable_session_yolo(session_key: str) -> None:
 
 
 def clear_session(session_key: str) -> None:
-    """Remove all approval and yolo state for a given session."""
+    """Remove all approval and yolo state for a given session. Durable
+    pending rows are cancelled subtree-wide (#133514 disposition (b)) —
+    after /stop or /new nobody can meaningfully answer them anyway."""
     if not session_key:
         return
+    from tools.approval_ledger import cancel_session as _cancel_pending
+
+    _cancel_pending(session_key)
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
