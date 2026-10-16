@@ -20,6 +20,9 @@ RX = {
     "status": re.compile(r"(статус\s+задач|покажи\s+статус|show\s+status)", re.IGNORECASE),
     "head": re.compile(r"(?:подними\s+задачу\s+(\S+)\s+в\s+(?:начало|первое)|move\s+task\s+(\S+)\s+(?:to\s+)?head)", re.IGNORECASE),
     "tail": re.compile(r"(?:опусти\s+задачу\s+(\S+)\s+в\s+конец(?:\s+очереди)?|move\s+task\s+(\S+)\s+tail)", re.IGNORECASE),
+    # "go task-X": the human contract-agreement gate for queued drafts. The task id is
+    # REQUIRED — a bare "го"/"иди" must stay conversational, never an accidental grant.
+    "agree": re.compile(r"(?:иди\s+|запускай\s+задачу\s+|стартуй\s+задачу\s+|(?:dispatch|agree|go)\s+)(task-\S+)", re.IGNORECASE),
 }
 
 
@@ -65,6 +68,28 @@ def apply(conn, op: dict, *, scope: str) -> dict:
             return {"ok": True, "op": kind, "task_id": op["arg"]}
         except LookupError as e:
             return {"ok": False, "op": kind, "error": str(e)}
+    if kind == "agree":
+        from . import transitions
+        tid = op["arg"]
+        row = conn.execute("SELECT state FROM ctl_task WHERE task_id=?", (tid,)).fetchone()
+        if row is None:
+            return {"ok": False, "op": kind, "error": f"unknown task_id {tid!r}"}
+        if row["state"] == "draft":
+            model.agree_contract(conn, tid)
+            try:
+                r = transitions.transition(conn, tid, "ready",
+                                           basis="user agree command")
+                return {"ok": True, "op": kind, **r,
+                        "agreed": model.material_agreed(conn, tid)}
+            except ValueError as e:
+                return {"ok": False, "op": kind, "error": str(e)}
+        if row["state"] == "ready":
+            # idempotent re-go: refresh the agreement stamp, no state churn
+            model.agree_contract(conn, tid)
+            return {"ok": True, "op": kind, "task_id": tid, "state": "ready",
+                    "agreed": model.material_agreed(conn, tid), "note": "already ready"}
+        return {"ok": False, "op": kind,
+                "error": f"cannot agree a task in state {row['state']!r} (draft/ready only)"}
     if kind == "status":
         rows = conn.execute("SELECT task_id, state, contract_version FROM ctl_task").fetchall()
         return {"ok": True, "op": kind,

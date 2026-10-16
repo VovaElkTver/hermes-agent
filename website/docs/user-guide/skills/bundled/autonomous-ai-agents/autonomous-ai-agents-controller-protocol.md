@@ -68,7 +68,8 @@ raw SQL on ctl_* tables. Call each tool only when its condition holds:
 | stuck mid-task | `ctl_block` with a reason | don't end the turn silently, don't use it to cancel |
 
 - `ctl_enqueue` — propose a task. It lands as draft with an unagreed MATERIAL
-  contract: enqueuing is proposing, never starting; only a human "иди" dispatches it.
+  contract: enqueuing is proposing, never starting; only a human "иди task-…"
+  (routed command: agree/иди/go + the task id) agrees the contract and readies it.
 - `ctl_step_done` — close your step; the tool answers with the status actually
   stored. If `ok` is false or `stored != requested`, the step is NOT done — say so.
 - `ctl_status` — a point-in-time snapshot (`as_of` marks when). It cannot answer

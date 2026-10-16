@@ -11,6 +11,7 @@
 | pause autonomy | «пауза», «замри, обсудим» | epoch+1 → новые автономные диспетчи block; идущему процессу interrupt_requested → подтверждение interrupted |
 | resume autonomy | «продолжай автономно» | permission on, epoch+1 (старые approvals умирают) |
 | cancel task | «отмени задачу task-xxxx» | task.state=cancelled, run остаётся interrupt_requested отдельно |
+| agree task | «иди task-xxxx», «go task-xxxx», «dispatch task-xxxx» | MATERIAL согласован (agreed_at), draft→ready; pump диспатчит при включённой автономии scope. Голый «го/иди» без id — не команда |
 | show status | «покажи статус задач» | список task/contract_version/permission |
 
 Пауза не запрещает отдельный явно запрошенный interactive-шаг и не возобновляет очередь.
