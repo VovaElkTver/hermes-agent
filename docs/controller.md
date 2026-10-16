@@ -11,6 +11,7 @@
 | pause autonomy | «пауза», «замри, обсудим» | epoch+1 → новые автономные диспетчи block; идущему процессу interrupt_requested → подтверждение interrupted |
 | resume autonomy | «продолжай автономно» | permission on, epoch+1 (старые approvals умирают) |
 | cancel task | «отмени задачу task-xxxx» | task.state=cancelled, run остаётся interrupt_requested отдельно |
+| agree task | «иди task-xxxx», «go task-xxxx», «dispatch task-xxxx» | MATERIAL согласован (agreed_at), draft→ready; pump диспатчит при включённой автономии scope. Голый «го/иди» без id — не команда |
 | show status | «покажи статус задач» | список task/contract_version/permission |
 
 Пауза не запрещает отдельный явно запрошенный interactive-шаг и не возобновляет очередь.
@@ -36,12 +37,18 @@ inter-task события §24–26 кроме run_finished, корректир�
 controller, видны только при `controller.enabled` (check_fn). Все идут через
 controller.model / controller.transitions — одна authoritative точка:
 - `ctl_status` — очередь (tasks+epoch) или разбор одной задачи (steps, контракт, события).
+  Consistent read-транзакция, снимок point-in-time с `as_of`; head newest-50 + has_more.
 - `ctl_enqueue` — ПРЕДЛОЖЕНИЕ задачи: draft + несогласованный MATERIAL-контракт,
   pump не диспатчит до человеческого «иди». Enqueue никогда не стартует сам.
 - `ctl_step_done` — закрытие шага с read-back: результат = фактически хранящийся
-  статус, «done» не предполагается.
+  статус, «done» не предполагается; expected_status — предусловие против гонки сессий.
 - `ctl_block` — running→blocked через audited transition (запрещённые переходы
   отклоняются), причина — в ctl_event.
+Классификация инструментов (readOnly/destructive) — sidecar `TOOL_META` (заимствование
+аннотаций из open-source Run:ai MCP-сервера): у барьера реальный потребитель —
+объявленно read-only инструменты проходят, когда dispatch заблокирован (смотреть на
+очередь можно всегда). Попутно найден мёртвый путь: `_default_scope` был не определён —
+любой автономный вызов падал в fail-closed; теперь scope-фолбэк = cwd процесса.
 
 ## Отключение
 Снять флаг + убрать controller из plugins.enabled. Ничто кроме controller/ не читает ctl_*;

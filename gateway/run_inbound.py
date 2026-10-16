@@ -1343,7 +1343,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                     finally:
                         _ctl_db.close()
                     _ctl_kind = _ctl_op["op"]
-                    if _ctl_kind in {"status", "cancel"} or not _ctl_res.get("ok", False):
+                    if _ctl_kind in {"status", "cancel", "agree"} or not _ctl_res.get("ok", False):
                         return f"[controller] {_ctl_kind}: {_ctl_res}"
                     event = dataclasses.replace(
                         event, text=(event.text or "") + (

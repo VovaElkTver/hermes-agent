@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,10 @@ def ctl_status(args: dict, **_: Any) -> str:
     scope = str(args.get("workdir") or "").strip()
     with _lock, _conn() as conn:
         from controller import model
+        # One deferred read transaction: every row below comes from a single
+        # consistent snapshot; as_of stamps the moment that snapshot opened.
+        conn.execute("BEGIN")
+        as_of = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         if task_id:
             task = _task_row(conn, task_id)
             if task is None:
@@ -62,23 +67,30 @@ def ctl_status(args: dict, **_: Any) -> str:
             events = conn.execute(
                 "SELECT ts, kind, origin, payload FROM ctl_event WHERE task_id=?"
                 " ORDER BY ts DESC LIMIT 8", (task_id,)).fetchall()
-            return _out(ok=True,
+            return _out(ok=True, as_of=as_of,
                         permission=model.get_permission(conn, task["workdir"]),
                         task=task,
                         contract=model.current_contract(conn, task_id),
                         steps=[dict(s) for s in steps],
-                        recent_events=[dict(e) for e in events])
+                        recent_events=[dict(e) for e in events],
+                        events_note=("recent_events is the newest 8 rows; an empty list "
+                                     "means no events exist OR they failed to load — "
+                                     "treat as absence of evidence, not evidence of absence"))
         perms = [dict(r) for r in conn.execute(
             "SELECT scope, enabled, execution_epoch FROM ctl_autonomy_permission")]
         sql = ("SELECT task_id, owner, workdir, goal, state, contract_version,"
                " updated_at FROM ctl_task")
-        params: tuple = ()
+        params: list = []
         if scope:
             sql += " WHERE workdir=?"
-            params = (str(Path(scope).resolve()),)
-        sql += " ORDER BY updated_at DESC LIMIT 50"
+            params.append(str(Path(scope).resolve()))
+        # Fixed head of the queue (newest 50) plus one probe row for has_more:
+        # an instructional tool gets an honest truncation flag, not page cursors.
+        sql += " ORDER BY updated_at DESC LIMIT 51"
         rows = conn.execute(sql, params).fetchall()
-        return _out(ok=True, permissions=perms, tasks=[dict(r) for r in rows])
+        has_more = len(rows) > 50
+        return _out(ok=True, as_of=as_of, permissions=perms,
+                    tasks=[dict(r) for r in rows[:50]], has_more=has_more)
 
 
 def ctl_enqueue(args: dict, **_: Any) -> str:
@@ -127,19 +139,32 @@ def ctl_enqueue(args: dict, **_: Any) -> str:
 
 def ctl_step_done(args: dict, **_: Any) -> str:
     """Finish one of the caller's steps, then READ BACK the stored status —
-    a step is done only when the row says so."""
+    a step is done only when the row says so. expected_status guards against a
+    concurrent session having already moved the step."""
     step_id = str(args.get("step_id") or "").strip()
     status = str(args.get("status") or "done").strip()
+    expected = str(args.get("expected_status") or "pending").strip()
     if not step_id:
         return _err("'step_id' is required")
     if status not in ("done", "blocked"):
         return _err("status must be 'done' or 'blocked'")
+    if expected not in ("pending", "done", "blocked", "failed"):
+        return _err("expected_status must be one of: pending, done, blocked, failed")
     with _lock, _conn() as conn:
         from controller import model
+        # Write transaction opened BEFORE the check: the SELECT-then-update pair
+        # is atomic across processes (sessions are separate connections), which
+        # a threading lock alone cannot promise.
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT step_id, task_id, status FROM ctl_step WHERE step_id=?",
                            (step_id,)).fetchone()
         if row is None:
             return _err(f"unknown step_id {step_id!r}")
+        if row["status"] != expected:
+            return _out(ok=False, step_id=step_id, stored=row["status"], expected=expected,
+                        error=f"precondition failed: stored={row['status']!r} != "
+                              f"expected={expected!r} — re-read with ctl_status; pass "
+                              f"expected_status={row['status']!r} only if re-closing is intended")
         model.finish_step(conn, step_id, status)
         after = conn.execute("SELECT status FROM ctl_step WHERE step_id=?",
                              (step_id,)).fetchone()
@@ -181,8 +206,13 @@ def _str(desc: str) -> dict:
 _TOOLS: dict[str, tuple[Any, str, dict, list[str]]] = {
     "ctl_status": (ctl_status,
                    "Show the controller queue: all tasks with their state and contract "
-                   "version, plus the autonomy epoch. Pass task_id for one task's steps, "
-                   "contract fields and recent events. Read-only.",
+                   "version, plus the autonomy permission/epoch per scope. Pass task_id for "
+                   "one task's steps, contract fields and recent events (newest 8). Use this "
+                   "BEFORE talking or writing about queue state — never recall it. A "
+                   "point-in-time snapshot only (as_of marks when): it cannot answer "
+                   "historical questions like 'what ran yesterday', and the task list is the "
+                   "newest 50 (has_more says if more exist). Does not modify anything and "
+                   "cannot approve or start tasks.",
                    {"task_id": _str("Optional: drill into one task"),
                     "workdir": _str("Optional: only tasks queued for this workdir scope")},
                    []),
@@ -190,7 +220,10 @@ _TOOLS: dict[str, tuple[Any, str, dict, list[str]]] = {
                     "Propose a new controller task (goal + workdir + optional steps, "
                     "acceptance criteria, dependencies on completed task_ids). The task "
                     "lands as draft with an unagreed contract: it is NOT dispatched until "
-                    "a human explicitly agrees it. Enqueueing is proposing, never starting.",
+                    "a human explicitly agrees it. Use when you want work queued for later "
+                    "or a follow-up recorded — not to start work yourself and not to "
+                    "change an already-agreed contract (that is an operator command). "
+                    "Enqueueing is proposing, never starting.",
                     {"goal": _str("One-line objective of the task"),
                      "workdir": _str("Absolute queue scope (project directory)"),
                      "steps": {"type": "array",
@@ -207,21 +240,45 @@ _TOOLS: dict[str, tuple[Any, str, dict, list[str]]] = {
                                   "description": "Queue position among live tasks (default tail)"}},
                     ["goal", "workdir"]),
     "ctl_step_done": (ctl_step_done,
-                      "Mark one of your controller steps done (or blocked) and VERIFY it "
-                      "landed: the reply reports the status actually stored. Never assume "
-                      "a step closed from the call alone.",
-                    {"step_id": _str("Step id to finish"),
-                    "status": {"type": "string", "enum": ["done", "blocked"],
-                               "description": "Default: done"}},
-                    ["step_id"]),
+                      "Close one of your controller steps (done or blocked) and VERIFY it "
+                      "landed: the reply reports the status actually stored. Use it only "
+                      "for steps of the task you are executing. It does not review, approve "
+                      "or complete the task — a passing review is still separate. If the "
+                      "step is not in expected_status (default pending), nothing is "
+                      "written: re-read with ctl_status instead of blind-retrying.",
+                      {"step_id": _str("Step id to finish"),
+                       "status": {"type": "string", "enum": ["done", "blocked"],
+                                  "description": "Default: done"},
+                       "expected_status": {"type": "string",
+                                           "description": "Precondition; default 'pending'."}},
+                      ["step_id"]),
     "ctl_block": (ctl_block,
                   "Report a running task as blocked, with a reason, through the audited "
                   "transition path (illegal transitions are rejected). Use this when you "
-                  "are stuck instead of ending the turn silently.",
+                  "are stuck instead of ending the turn silently. It only blocks — it "
+                  "never cancels, unblocks, or revives a task, and cannot be called on a "
+                  "draft (use ctl_status to see the real state first).",
                   {"task_id": _str("Task to block"),
                    "reason": _str("Why it cannot proceed")},
                   ["task_id", "reason"]),
 }
+
+# Tool classification in the spirit of MCP annotations (borrowed from NVIDIA's
+# open-sourced Run:ai MCP server): a declaration the dispatch barrier reads
+# instead of guessing mutability from the tool name.
+TOOL_META: dict[str, dict[str, bool]] = {
+    "ctl_status": {"readOnlyHint": True, "destructiveHint": False},
+    "ctl_enqueue": {"readOnlyHint": False, "destructiveHint": False},
+    "ctl_step_done": {"readOnlyHint": False, "destructiveHint": False},
+    "ctl_block": {"readOnlyHint": False, "destructiveHint": False},
+}
+
+
+def is_read_only(name: str) -> bool:
+    """Declared read-only tools keep working while the barrier blocks dispatch:
+    a paused or epoch-stale queue still lets an agent look at the queue —
+    reading is the recovery path, and the declaration is checked, not the name."""
+    return TOOL_META.get(name, {}).get("readOnlyHint", False)
 
 EMOJI = "🎛️"
 
