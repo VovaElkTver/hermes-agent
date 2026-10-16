@@ -460,6 +460,9 @@ gateway:
     stopped: "⚡ Durduruldu. Bu oturuma devam edebilirsin."
     no_active: "Durdurulacak aktif görev yok."
     force_stopped_pending: "⚡ Zorla durduruldu. Ajan henüz başlıyordu — oturum kilidi açıldı."
+  att:
+    paused: "⏸ Dikkat — bir sonraki güvenli sınırda donuyorum. Hiçbir şey kaybolmadı: devam için 'continue', iptal için /stop yaz."
+    none: "Durdurulacak bir şey yok — /att yalnızca canlı turda çalışır."
   title:
     db_unavailable: "Oturum veritabanı kullanılamıyor."
     warn_prefix: "⚠️ {error}"
@@ -1547,6 +1550,8 @@ slash:
     description: "Paylaşılan bir profil arşivini yeni profil olarak içe aktar"
   stop:
     description: "Çalışan tüm arka plan süreçlerini sonlandır"
+  att:
+    description: "Dikkat: canlı turu bir sonraki güvenli sınırda dondur — sonra devam et veya /stop"
   pause:
     description: "Yeni işleri genel olarak duraklat (acil durdurma); '/pause off' devam ettirir"
   deny:

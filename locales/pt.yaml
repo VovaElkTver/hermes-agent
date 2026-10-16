@@ -460,6 +460,9 @@ gateway:
     stopped: "⚡ Parado. Podes continuar esta sessão."
     no_active: "Não há nenhuma tarefa ativa para parar."
     force_stopped_pending: "⚡ Interrupção forçada. O agente ainda estava iniciando — sessão desbloqueada."
+  att:
+    paused: "⏸ Atenção — congelando no próximo ponto seguro. Nada foi perdido: escreva «continue» para retomar, ou /stop para cancelar."
+    none: "Nada em execução para pausar — /att só age em um turno vivo."
   title:
     db_unavailable: "Base de dados de sessões indisponível."
     warn_prefix: "⚠️ {error}"
@@ -1547,6 +1550,8 @@ slash:
     description: "Importar um arquivo de perfil compartilhado como novo perfil"
   stop:
     description: "Encerrar todos os processos em segundo plano em execução"
+  att:
+    description: "Atenção: congelar o turno vivo no próximo ponto seguro — depois continuar ou /stop"
   pause:
     description: "Pausar todo trabalho novo globalmente (parada de emergência); '/pause off' retoma"
   deny:

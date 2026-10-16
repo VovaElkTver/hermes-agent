@@ -914,7 +914,7 @@ class GatewayBusySessionMixin:
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
-        "topic", "whoami", "platform", "stop", "reasoning", "memory", "skills", "fast",
+        "topic", "whoami", "platform", "stop", "att", "reasoning", "memory", "skills", "fast",
         "approvals", "model", "codex-runtime", "personality", "suggestions", "save", "retry",
         "sethome", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
         "bundles", "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
@@ -950,7 +950,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop")
+        k: f"_busy_{k}_command" for k in ("start", "stop", "att", "new", "queue", "steer", "egress", "goal", "loop")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
@@ -989,6 +989,10 @@ class GatewayBusySessionMixin:
 
         return t("gateway.busy.slash_rejected", command=name)
 
+    async def _handle_att_command(self, event: MessageEvent):
+        """Idle-path /att: nothing is running to freeze — say so instead of falling through to the agent."""
+        return EphemeralReply(t("gateway.att.none"))
+
     async def _handle_pause_command(self, event: MessageEvent):
         """`/pause [reason]` engages the global emergency stop; `/pause off` lifts it (the estop gate
         lets slash commands through while paused so messaging-only operators are never locked out)."""
@@ -1023,6 +1027,28 @@ class GatewayBusySessionMixin:
         )
         logger.info("STOP for session %s — agent interrupted, session lock released", quick_key)
         return EphemeralReply(t("gateway.stop.stopped"))
+
+    async def _busy_att_command(self, event: MessageEvent, quick_key: str, source):
+        """/att — human soft pause: freeze the live turn at its next safe boundary. Unlike /stop this
+        is NOT a hard cancel: the turn's history and the pending steer survive, background processes
+        keep running, and the session stays resumable — the operator's next message decides the fork
+        (continue re-anchors the work, /stop cancels it). An optional note is delivered to the agent
+        as the interrupt message so the model sees WHY it froze."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        state = self._peek_session_state(quick_key)
+        running = state.turn.agent if state else None
+        if running is None or running is _AGENT_PENDING_SENTINEL or not hasattr(running, "interrupt"):
+            return EphemeralReply(t("gateway.att.none"))
+        note = (event.get_command_args() or "").strip()
+        try:
+            accepted = running.interrupt(note or None)
+        except Exception:
+            logger.warning("ATT interrupt failed for session %s", quick_key, exc_info=True)
+            accepted = False
+        if not accepted:
+            return EphemeralReply(t("gateway.att.none"))
+        logger.info("ATT for session %s — soft pause requested at next safe boundary", quick_key)
+        return EphemeralReply(t("gateway.att.paused"))
 
     async def _busy_new_command(self, event: MessageEvent, quick_key: str, source):
         # /reset and /new bypass the running-agent guard (else they'd queue as user text and replay

@@ -464,6 +464,9 @@ gateway:
     stopped: "⚡ Stopped. You can continue this session."
     no_active: "No active task to stop."
     force_stopped_pending: "⚡ Force-stopped. The agent was still starting — session unlocked."
+  att:
+    paused: "⏸ Attention — freezing at the next safe boundary. Nothing was lost: write 'continue' to resume, or /stop to cancel."
+    none: "Nothing is running to pause — /att only acts on a live turn."
   title:
     db_unavailable: "Session database not available."
     warn_prefix: "⚠️ {error}"
@@ -1619,6 +1622,8 @@ slash:
     description: "Import a shared profile archive as a new profile"
   stop:
     description: "Kill all running background processes"
+  att:
+    description: "Attention: freeze the live turn at the next safe boundary — then continue or /stop"
   pause:
     description: "Pause new work globally (emergency stop); '/pause off' resumes"
   deny:

@@ -463,6 +463,9 @@ gateway:
     stopped: "⚡ Leállítva. Folytathatod ezt a munkamenetet."
     no_active: "Nincs leállítható aktív feladat."
     force_stopped_pending: "⚡ Kényszerített leállítás. Az ügynök még csak indult — a munkamenet feloldva."
+  att:
+    paused: "⏸ Figyelem — megfagyok a következő biztonságos határon. Semmi nem veszett el: írd, hogy „continue”, vagy /stop a megszakításhoz."
+    none: "Nincs futó művelet — az /att csak élő turnön hat."
   title:
     db_unavailable: "A munkamenet-adatbázis nem érhető el."
     warn_prefix: "⚠️ {error}"
@@ -1564,6 +1567,8 @@ slash:
     description: "Megosztott profilarchívum importálása új profilként"
   stop:
     description: "Minden futó háttérfolyamat leállítása"
+  att:
+    description: "Figyelem: élő turn megfagyasztása a következő biztonságos határon — majd folytatás vagy /stop"
   pause:
     description: "Új munka globális szüneteltetése (vészleállítás); a '/pause off' folytatja"
   deny:

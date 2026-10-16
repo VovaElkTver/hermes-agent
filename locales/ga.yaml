@@ -460,6 +460,9 @@ gateway:
     stopped: "⚡ Stoptha. Is féidir leat leanúint leis an seisiún seo."
     no_active: "Níl aon tasc gníomhach le stopadh."
     force_stopped_pending: "⚡ Stoptha le fórsa. Bhí an gníomhaire fós ag tosú — seisiún díghlasáilte."
+  att:
+    paused: "⏸ Aird — reoitear ag an gcéann teorainn shábháilte. Níor cailleadh aon rud: scríobh 'continue' chun athghníomhú, nó /stop chun cealú."
+    none: "Níl aon rud ar siúl — ní oibríonn /att ach ar thiúrná bheo."
   title:
     db_unavailable: "Níl bunachar sonraí na seisiún ar fáil."
     warn_prefix: "⚠️ {error}"
@@ -1547,6 +1550,8 @@ slash:
     description: "Iompórtáil cartlann próifíle roinnte mar phróifíl nua"
   stop:
     description: "Maraigh gach próiseas cúlra atá ag rith"
+  att:
+    description: "Aird: reoigh an tiúrná bheo ag an gcéann teorainn shábháilte — ansin continue nó /stop"
   pause:
     description: "Cuir obair nua ar sos go domhanda (stop éigeandála); atosaíonn '/pause off' í"
   deny:
