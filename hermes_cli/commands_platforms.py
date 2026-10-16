@@ -386,7 +386,10 @@ _SLACK_VIA_HERMES_ONLY = frozenset({
     "refine", "review", "pause", "whoami", "platform", "insights", "login", "initiate-setup",
     # Fork /fork + /join tipped the registry past the 50-cap; demote the rarer
     # one-off lookup (rule: one-off lookups before recurring interactive surfaces).
-    "usage"})
+    "usage",
+    # Fork /att tipped the cap again; /codex-runtime is a one-off config lookup
+    # (rule: one-off lookups before recurring interactive surfaces), reachable via /hermes codex-runtime.
+    "codex-runtime"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
