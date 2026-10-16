@@ -199,8 +199,15 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     overlay = HERMES_OVERLAYS.get(canonical)
     if mdev_info is not None:
         ov = overlay or HermesOverlay()
-        env_vars = list(mdev_info.env)
-        for ev in ov.extra_env_vars:
+        # A plugin profile for the same id is MORE SPECIFIC than the generic catalog:
+        # models.dev renames credential env vars on a whim (commandcode: COMMANDCODE_API_KEY
+        # -> CMD_API_KEY, 2026-10-16), while doctor/config_defaults/the plugin itself key off
+        # the documented names. Union the profile's credential vars in front (URL-shaped vars
+        # are already excluded by _plugin_profile_pdef) so catalog drift cannot orphan a
+        # configured provider.
+        prof_def = _plugin_profile_pdef(canonical)
+        env_vars = list(prof_def.api_key_env_vars) if prof_def is not None else []
+        for ev in [*mdev_info.env, *ov.extra_env_vars]:
             if ev not in env_vars:
                 env_vars.append(ev)
         return _overlay_pdef(canonical, ov, mdev_info.name, tuple(env_vars), ov.base_url_override or mdev_info.api,
