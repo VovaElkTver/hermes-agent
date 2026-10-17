@@ -376,3 +376,75 @@ class TestWireVerbs:
         finally:
             self._teardown_flags(jid)
 
+
+
+def test_upgrade_legacy_journal_without_fork_gate(tmp_path, monkeypatch):
+    """Dogfood 17.10: a journal written before PR-2b has fork_run/fork_branch/
+    fork_checkpoint but NO fork_gate. Readers (get_gate/gate_open) and the fork.*
+    socket verbs died with OperationalError inside the live gateway; every open
+    now goes through _connect(), which ensures the schema (idempotent). Fixture
+    below is the real pre-PR-2b _SCHEMA verbatim (from commit 3a34e7059a)."""
+    from tools import fork_explore_journal as fem
+    monkeypatch.setattr(fem, "get_hermes_home", lambda *a, **k: tmp_path)
+    path = fem.journal_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as db:
+        db.executescript(_LEGACY_SCHEMA_PRE_PR2B)
+        db.execute("INSERT INTO fork_run (join_id, created_at, strategy)"
+                   " VALUES ('fj_legacy', 1.0, 'dry')")
+
+    # boundary reader + verbs on the legacy DB: no crash, gate table materialised
+    assert fem.gate_open("fj_legacy", "b1") is True
+    assert fem.get_gate("fj_legacy", "b1") is None
+    assert verbs.pause_branch("fj_legacy", ref="b1")["ok"] is True
+    assert fem.get_gate("fj_legacy", "b1")["state"] == "paused"
+
+
+_LEGACY_SCHEMA_PRE_PR2B = """CREATE TABLE IF NOT EXISTS fork_run (
+  join_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL DEFAULT '',
+  created_at REAL NOT NULL,
+  strategy TEXT NOT NULL,
+  winner_ref TEXT,
+  prefix_hash TEXT NOT NULL DEFAULT '',
+  params_json TEXT NOT NULL DEFAULT '{}',
+  packet_json TEXT NOT NULL DEFAULT '{}',
+  tokens_total INTEGER NOT NULL DEFAULT 0,
+  wasted_tokens INTEGER NOT NULL DEFAULT 0,
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'joined'
+);
+CREATE TABLE IF NOT EXISTS fork_branch (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  join_id TEXT NOT NULL,
+  branch_ref TEXT NOT NULL,
+  strategy_text TEXT NOT NULL DEFAULT '',
+  steps_json TEXT NOT NULL DEFAULT '[]',
+  intents_json TEXT NOT NULL DEFAULT '[]',
+  gates_json TEXT NOT NULL DEFAULT '{}',
+  score REAL NOT NULL DEFAULT 0,
+  score_components_json TEXT NOT NULL DEFAULT '{}',
+  tokens INTEGER NOT NULL DEFAULT 0,
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  stop_reason TEXT NOT NULL DEFAULT '',
+  reads_json TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_fork_branch_run ON fork_branch(join_id);
+CREATE INDEX IF NOT EXISTS idx_fork_run_session ON fork_run(session_id, created_at);
+-- PR-2 contract v4 (пошаговая пауза): checkpoint ветки на КАЖДОЙ границе шага —
+-- trace/бюджет/step_index. Ветка, отсечённая меж-шаговым гейтом до join,
+-- остаётся в журнале полностью; возобновление читает состояние отсюда.
+CREATE TABLE IF NOT EXISTS fork_checkpoint (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  join_id TEXT NOT NULL,
+  branch_ref TEXT NOT NULL,
+  step_index INTEGER NOT NULL,
+  created_at REAL NOT NULL,
+  tokens INTEGER NOT NULL DEFAULT 0,
+  budget_remaining_tokens INTEGER NOT NULL DEFAULT 0,
+  cont_state INTEGER,
+  stop_reason TEXT NOT NULL DEFAULT '',
+  steps_json TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_fork_cp_run ON fork_checkpoint(join_id, branch_ref, step_index);"""
+

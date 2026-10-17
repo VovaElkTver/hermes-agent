@@ -158,7 +158,7 @@ def write_checkpoint(join_id: str, cp: dict[str, Any]) -> None:
     never a fork failure (caller must still never die on it)."""
     path = journal_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path, timeout=2.0) as db:
+    with _connect(path) as db:
         _ensure_schema(db)
         db.execute(
             "INSERT INTO fork_checkpoint (join_id, branch_ref, step_index, created_at,"
@@ -178,7 +178,7 @@ def get_checkpoints(join_id: str, branch_ref: str) -> list[dict[str, Any]]:
     path = journal_path()
     if not path.exists():
         return []
-    with sqlite3.connect(path, timeout=2.0) as db:
+    with _connect(path) as db:
         db.row_factory = sqlite3.Row
         return [dict(r) for r in db.execute(
             "SELECT * FROM fork_checkpoint WHERE join_id=? AND branch_ref=?"
@@ -299,8 +299,14 @@ def holder_alive(holder: str) -> bool:
 
 
 def _connect(path: Path) -> sqlite3.Connection:
+    # Schema-ensuring open: the ONLY safe way to touch the journal. A DB written
+    # before PR-2b has no fork_gate table — a bare reader (get_gate/gate_open) would
+    # raise OperationalError inside the live fork boundary and inside fork.* socket
+    # verbs (dogfood on the upgraded gateway, 17.10). CREATE IF NOT EXISTS is idempotent.
     path.parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(path, timeout=2.0)
+    db = sqlite3.connect(path, timeout=2.0)
+    _ensure_schema(db)
+    return db
 
 
 def ensure_gate_rows(join_id: str, refs: list[str], holder: str = "") -> None:
@@ -321,7 +327,7 @@ def get_gate(join_id: str, ref: str = "") -> dict[str, Any] | None:
     path = journal_path()
     if not path.exists():
         return None
-    with sqlite3.connect(path, timeout=2.0) as db:
+    with _connect(path) as db:
         db.row_factory = sqlite3.Row
         row = db.execute(
             "SELECT * FROM fork_gate WHERE join_id=? AND branch_ref=?",
@@ -336,7 +342,7 @@ def gate_open(join_id: str, ref: str) -> bool:
     path = journal_path()
     if not path.exists():
         return True
-    with sqlite3.connect(path, timeout=2.0) as db:
+    with _connect(path) as db:
         states = dict(db.execute(
             "SELECT branch_ref, state FROM fork_gate"
             " WHERE join_id=? AND branch_ref IN (?, '')",
@@ -373,7 +379,7 @@ def close_finished_gates(join_id: str) -> None:
         path = journal_path()
         if not path.exists():
             return
-        with sqlite3.connect(path, timeout=2.0) as db:
+        with _connect(path) as db:
             db.execute(
                 "UPDATE fork_gate SET state='closed', reason='completed',"
                 " holder=?, updated_at=? WHERE join_id=? AND state='running'",
@@ -390,7 +396,7 @@ def resumed_pending_work(session_id: str) -> list[tuple[str, str]]:
     path = journal_path()
     if not path.exists():
         return []
-    with sqlite3.connect(path, timeout=2.0) as db:
+    with _connect(path) as db:
         pending = [tuple(r) for r in db.execute(
             "SELECT g.join_id, g.branch_ref FROM fork_gate g"
             " JOIN fork_run r ON r.join_id = g.join_id"
@@ -399,7 +405,7 @@ def resumed_pending_work(session_id: str) -> list[tuple[str, str]]:
     out = [(jid, ref) for jid, ref in pending if ref]
     for jid, ref in pending:
         if ref == "":
-            with sqlite3.connect(path, timeout=2.0) as db:
+            with _connect(path) as db:
                 out += [(jid, r[0]) for r in db.execute(
                     "SELECT branch_ref FROM fork_gate WHERE join_id=?"
                     " AND branch_ref != '' AND state='resumed_pending'", (jid,))]
@@ -415,7 +421,7 @@ def settled_group(join_id: str) -> bool:
     path = journal_path()
     if not path.exists():
         return False
-    with sqlite3.connect(path, timeout=2.0) as db:
+    with _connect(path) as db:
         n = db.execute(
             "SELECT COUNT(*) FROM fork_gate WHERE join_id=?"
             " AND state='resumed_pending' AND branch_ref != ''",
@@ -435,7 +441,7 @@ def sweep_crashed_gates(my_holder: str = "") -> int:
         return 0
     me = my_holder or proc_stamp()
     n = 0
-    with sqlite3.connect(path, timeout=2.0) as db:
+    with _connect(path) as db:
         candidates = [r[0] for r in db.execute(
             "SELECT holder FROM fork_gate WHERE state='running'"
             " AND holder != '' AND holder != ?", (me,)).fetchall()]
