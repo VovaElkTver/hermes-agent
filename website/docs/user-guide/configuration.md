@@ -3100,3 +3100,53 @@ dashboard:
 - `ws_orphan_reap_grace_s` — how long a WS-detached session waits before the orphan reaper collects it. Raise alongside the keepalive values if clients reconnect slowly. Periodic session maintenance also completes cleanup for closed sockets and re-arms a missing orphan timer, so a detached chat cannot keep its ownership lease solely because its initial cleanup or timer was lost. Reconnecting cancels that timer; active delegated work and healthy running turns remain protected by the normal orphan-reaper checks. (`HERMES_TUI_WS_ORPHAN_REAP_GRACE_S` remains as an internal override.)
 - `ws_orphan_activity_stale_s` (default `600`) — how long a detached **running** turn's activity clock (the same clock the `agent.turn_liveness` watchdog samples: API waits, stream tokens, tool heartbeats) must be idle before the orphan reaper interrupts it. A client-absent turn that is still actively producing keeps running to completion detached — closing the laptop, backgrounding the mobile app, or a desktop update no longer cancels healthy long turns; only a genuinely wedged turn is interrupted. Set `0` to interrupt at the grace window regardless of activity (old behavior).
 - `startup_orphan_sweep` (default `true`) — the WS-orphan reap timer above is in-process, so a gateway restart (update, crash, systemd) before it fires leaves the session row open forever — phantom "active" work in `/resume` and dashboards. On every gateway boot — both the stdio TUI (`entry.main`) and the desktop/dashboard WebSocket sidecar (`handle_ws`) — rows with source `tui` / `desktop` / `subagent` / `unknown` (a row the token-accounting guard had to materialize itself) whose start time **and** newest message are both older than the session TTL (`HERMES_TUI_SESSION_TTL_S`, default 6 hours) are closed with `end_reason: startup_orphan_reap`. Messaging-platform sessions (Telegram, Discord, …) are never touched, live in-memory sessions (a client that already resumed) are excluded, and swept sessions remain resumable.
+
+## Fork Exploration (`fork_explore`)
+
+Experiment: at a decision fork ("развилка"), run cheap **dry-rollout branches** over one
+shared, byte-identical context to see where each path leads before committing. Each
+branch simulates 1..depth model steps along its assigned strategy with **no writes**
+(read-only by construction; wishes are recorded as intents), branches are screened by
+deterministic hard gates first, then compared by a blind pairwise judge (another model
+than the branches). The winner returns as a compact JoinPacket; full traces stay in the
+fork journal. Requires the `fork_explore` tool (shipped disabled-by-default fan-out).
+
+```yaml
+fork_explore:
+  enabled: true            # master switch; also gates tool availability
+  shadow_only: true        # journal the gate's decision, no real fan-out yet (calibrate first)
+  k_max: 4                 # max branches per fork
+  depth_default: 2         # model steps simulated per branch (a ceiling, not a commitment)
+  depth_max: 3             # hard ceiling for the depth parameter
+  tokens_per_step_max: 1000
+  bad_json_retry: true     # one reformat retry when a branch returns non-JSON
+  temperature: 0.7
+  disable_thinking: true   # branch calls run without extended thinking
+  fork_deadline_s: 90      # per-branch wall-clock deadline
+  session_token_budget: 120000   # 24h budget; a fork crossing it is refused pre-flight
+  min_margin_delta: 0.34   # winner must beat the runner-up by this score margin
+  cluster_similarity: 0.8  # near-duplicate strategies collapse before running
+  score_weights:           # composite = judge + consensus + cost
+    judge: 0.7
+    consensus: 0.25
+    cost: 0.05
+  early_stop_consensus: true   # cancel queued branches once ⌈k/2⌉+1 agree
+  join_max_tokens: 1500    # JoinPacket cap into the main context
+  synthesize: true         # allow a new path C from comparing A and B (same gates)
+  forbidden_tools: [terminal, write_file, patch]   # branches may not even intent these
+  read_roots: []           # directories branches may read during rollout (empty = none)
+  branch_endpoint:         # empty base_url = the session's main model; set to pin another
+    base_url: ""
+    model: ""
+    api_key_env: ""
+  judge:                   # blind comparative judge — use a model distinct from branches
+    base_url: ""           # the fleet pins an SGLang host here
+    model: ""
+    api_key_env: FORK_JUDGE_API_KEY   # local endpoints accept any value
+    max_tokens: 4000
+    disable_thinking: true
+```
+
+Shadow-mode calibration data (fork_rate, win_over_default, wasted_tokens) is written to
+`<HERMES_HOME>/forks/fork_journal.db`; production fan-out should be enabled
+(`shadow_only: false`) only after reviewing it.
