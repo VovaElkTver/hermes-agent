@@ -1,17 +1,31 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
+  <img src="assets/banner-fork.png" alt="Hermes Autonomous" width="100%">
 </p>
 
 # Hermes Agent ☤
 > [!IMPORTANT]
 > **Hermes Autonomous** — a fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)
-> with managed autonomy: a supervisor gate for delegated workers, fork guardrails, and a
-> deterministic task controller (queue, headless workers, live judge review, budgets,
-> needs_human escalation). Mechanics: [`docs/controller.md`](docs/controller.md).
+> where the agent's authority is *granted, not assumed*. Upstream behavior is unchanged
+> until you switch features on:
 >
-> One-line install of THIS fork — Linux/WSL:
-> `bash <(curl -fsSL https://raw.githubusercontent.com/VovaElkTver/hermes-autonomous-agent/main/fork-install.sh)`
-> Windows: `iwr -useb https://raw.githubusercontent.com/VovaElkTver/hermes-autonomous-agent/main/fork-install.ps1 | iex`
+> - **Managed-autonomy controller** — tasks carry MATERIAL contracts that no model text can
+>   approve: a human command routed by code *before* the agent turn («иди task-X» / `go task-X`)
+>   readies a queued draft; autonomy grants are per-scope with epochs (pause/restart kills
+>   stale authority); completion requires an independent pass-review bound to the artifact
+>   hash — "worker said done" is never done; budgets and audited state transitions throughout.
+>   Agent-facing tools (`ctl_status/enqueue/step_done/block`) answer with what the database
+>   *actually stores* — read-back, not optimism. Flag: `controller.enabled` (off by default).
+> - **Durable approvals** — pending approval answers survive gateway restarts (off by default).
+> - **Agent orchestration** — `fork`/`join` conversation branches with work-note merge,
+>   a supervisor plugin with judge-reviewed delegation, and fork guardrails (retry /
+>   confirmation / delegation guards).
+> - **Project-scoped tools** — lazy MCP tool loading per project via `.hermes/mcp-scope.yaml`.
+> - **Persistent tmux sessions** — drive long-lived interactive terminals as a tool.
+> - **One-line install of THIS fork** — Linux/WSL:
+>   `bash <(curl -fsSL https://raw.githubusercontent.com/VovaElkTver/hermes-autonomous-agent/main/fork-install.sh)`
+>   Windows: `iwr -useb https://raw.githubusercontent.com/VovaElkTver/hermes-autonomous-agent/main/fork-install.ps1 | iex`
+>
+> Mechanics: [`docs/controller.md`](docs/controller.md).
 
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
