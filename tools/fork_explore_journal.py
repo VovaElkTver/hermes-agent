@@ -380,3 +380,66 @@ def close_finished_gates(join_id: str) -> None:
                 (proc_stamp(), time.time(), join_id))
     except (sqlite3.Error, OSError) as exc:
         logger.debug("fork gate close for %s deferred: %s", join_id, exc)
+
+
+def resumed_pending_work(session_id: str) -> list[tuple[str, str]]:
+    """Lazy-driver intake (STITCH-DESIGN-8012 §3.4): (join_id, branch_ref) pairs
+    queued for re-drive, restricted to this session's forks. A group row ('')
+    in resumed_pending expands to every non-group row of that fork — resume of
+    the whole fork must not need k separate verb calls."""
+    path = journal_path()
+    if not path.exists():
+        return []
+    with sqlite3.connect(path, timeout=2.0) as db:
+        pending = [tuple(r) for r in db.execute(
+            "SELECT g.join_id, g.branch_ref FROM fork_gate g"
+            " JOIN fork_run r ON r.join_id = g.join_id"
+            " WHERE g.state='resumed_pending' AND r.session_id=?"
+            " ORDER BY g.updated_at", (session_id,)).fetchall()]
+    out = [(jid, ref) for jid, ref in pending if ref]
+    for jid, ref in pending:
+        if ref == "":
+            with sqlite3.connect(path, timeout=2.0) as db:
+                out += [(jid, r[0]) for r in db.execute(
+                    "SELECT branch_ref FROM fork_gate WHERE join_id=?"
+                    " AND branch_ref != '' AND state='resumed_pending'", (jid,))]
+    # one row per branch; group expansion can overlap explicit rows
+    seen: set[tuple[str, str]] = set()
+    return [p for p in out if not (p in seen or seen.add(p))]
+
+
+def sweep_crashed_gates(my_holder: str = "") -> int:
+    """Lazy crash sweep (§3.3C): rows still 'running' whose holder process is
+    provably dead belong to no one → paused/crashed, so a later resume CAS has
+    something to transition from. Runs at journal-touch time, no background
+    thread. Rows with empty or unparseable holders stay untouched."""
+    path = journal_path()
+    if not path.exists():
+        return 0
+    me = my_holder or proc_stamp()
+    n = 0
+    with sqlite3.connect(path, timeout=2.0) as db:
+        candidates = [r[0] for r in db.execute(
+            "SELECT holder FROM fork_gate WHERE state='running'"
+            " AND holder != '' AND holder != ?", (me,)).fetchall()]
+    for holder in candidates:
+        if holder_alive(holder):
+            continue
+        if cas_gate_all_holders(holder, me):
+            n += 1
+    return n
+
+
+def cas_gate_all_holders(holder: str, new_holder: str) -> bool:
+    """CAS every dead-holder 'running' row to paused/crashed in one statement —
+    the sweep is bulk by construction (a crashed process held all its rows)."""
+    try:
+        with _connect(journal_path()) as db:
+            cur = db.execute(
+                "UPDATE fork_gate SET state='paused', reason='crashed',"
+                " holder=?, updated_at=? WHERE state='running' AND holder=?",
+                (new_holder, time.time(), holder))
+            return cur.rowcount > 0
+    except (sqlite3.Error, OSError) as exc:
+        logger.debug("fork gate sweep deferred for %s: %s", holder, exc)
+        return False

@@ -177,6 +177,49 @@ def _gate_open(join_id: str, ref: str) -> bool:
         return True
 
 
+def _redrive_session_forks(session_id: str, cfg: dict, client: Any, model: str) -> int:
+    """The lazy re-drive driver (STITCH-DESIGN-8012 §3.4). Resume verbs flip
+    fork_gate rows to 'resumed_pending' and stop there; whoever calls
+    fork_explore next in this session pays for the replay. Ownership of one
+    branch is the CAS resumed_pending→running — losing it means another
+    driver already took the branch. Dead-on-arrival forks (no live threads,
+    possibly after a gateway restart) are healed here, never errored."""
+    if not session_id:
+        return 0
+    try:
+        from tools.fork_explore_journal import (get_checkpoints, cas_gate,
+                                                proc_stamp,
+                                                resumed_pending_work,
+                                                sweep_crashed_gates)
+        from tools.fork_explore_rollout import redrive_from_checkpoint
+    except (ImportError, OSError) as exc:  # pragma: no cover - broken install
+        logger.warning("fork re-drive unavailable: %s", exc)
+        return 0
+    sweep_crashed_gates()
+    done = 0
+    for jid, ref in resumed_pending_work(session_id):
+        if not cas_gate(jid, ref, ("resumed_pending",), "running",
+                        holder=proc_stamp()):
+            continue  # another process/driver claimed this branch
+        cps = get_checkpoints(jid, ref)
+        if not cps:
+            # queued with nothing on disk to replay onto: terminal, not an error
+            cas_gate(jid, ref, ("running",), "closed", reason="no_checkpoint")
+            continue
+        deadline = time.monotonic() + float(cfg["fork_deadline_s"])
+        try:
+            state = redrive_from_checkpoint(client, model, cfg, deadline, cp=cps[-1])
+            logger.info("fork re-drive %s/%s: %d steps, %d tokens, stop=%s",
+                        jid, ref, len(state.get("steps") or []),
+                        state.get("tokens", 0), state.get("stop_reason"))
+            done += 1
+        except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
+            logger.debug("fork re-drive %s/%s failed: %s", jid, ref, exc,
+                         exc_info=True)
+            cas_gate(jid, ref, ("running",), "paused", reason="redrive_failed")
+    return done
+
+
 # Per-branch continue flags of in-flight forks: join_id -> {ref -> ContinueFlag}.
 # The future control-socket verb «не планировать следующий шаг» (сшивка с
 # task-b78849c10d) is just request_stop() below — no second mechanism.
@@ -406,6 +449,11 @@ def fork_explore(args: dict, session_id: str = "") -> str:
     if judge_client is None:
         judge_client, judge_model = client, model
         logger.info("fork_explore: judge endpoint unavailable, falling back to branch model")
+
+    # Lazy re-drive (PR-2b, STITCH-DESIGN-8012 §3.4): fork_explore's own entry
+    # is the only sanctioned executor — resume verbs only queue rows; this call
+    # replays whatever this session has pending. Never fatal to the current ask.
+    _redrive_session_forks(session_id, cfg, client, model)
 
     prefix = build_shared_prefix(task, str(args.get("fork_point") or ""), shared_context,
                                  criteria_list, facts)

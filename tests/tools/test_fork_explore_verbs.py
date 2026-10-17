@@ -12,7 +12,7 @@ import json
 import time
 
 from tools import fork_explore_journal as fem
-from tools.fork_explore_rollout import BranchRoller, ContinueFlag
+from tools.fork_explore_rollout import BranchRoller, ContinueFlag, redrive_from_checkpoint
 from tools.fork_explore_tool import run_branch
 
 
@@ -20,7 +20,7 @@ def base_cfg(**over):
     cfg = {
         "depth_default": 2, "depth_max": 3, "tokens_per_step_max": 200,
         "temperature": 0.7, "bad_json_retry": False, "forbidden_tools": [],
-        "read_roots": [],
+        "read_roots": [], "fork_deadline_s": 30,
     }
     cfg.update(over)
     return cfg
@@ -32,6 +32,16 @@ def _script_chat(steps, calls):
         done = sum(1 for m in messages if m["role"] == "assistant")
         step = steps[min(done, len(steps) - 1)]
         return json.dumps(step), 50
+    return chat
+
+
+def _script_chat_by_call(steps, calls):
+    """Like _script_chat but keyed by CALL INDEX — a resumed leg carries
+    replayed assistant messages that would otherwise shift the cursor."""
+    def chat(client, model, messages, **kw):
+        i = len(calls)
+        calls.append(i)
+        return json.dumps(steps[min(i, len(steps) - 1)]), 50
     return chat
 
 
@@ -132,3 +142,90 @@ class TestGateAtBoundary:
                            time.monotonic() + 30,
                            chat=_script_chat([STEP_A1], calls), cont=flag)
         assert len(calls) == 2 and trace["stop_reason"] == "no_progress"
+
+
+class TestLazyRedrive:
+    """Resume only queues (resumed_pending); the driver replays from the last
+    boundary checkpoint and claims ownership by CAS from resumed_pending."""
+
+    @staticmethod
+    def _queued_fork(jid, session="s-redrive", steps=1, tokens=120):
+        fem.write_run({"join_id": jid, "session_id": session, "strategy": "select",
+                       "branches": [{"ref": "b1", "strategy_text": "с"}]})
+        fem.write_checkpoint(jid, {
+            "branch_ref": "b1", "step_index": steps, "tokens": tokens,
+            "budget_remaining_tokens": 600 - tokens, "stop_reason": "paused_by_request",
+            "cont_state": False, "steps": [STEP_A1] * steps})
+        fem.ensure_gate_rows(jid, ["b1"], holder="999999:42")
+        assert fem.cas_gate(jid, "b1", ("running",), "paused")
+        assert fem.cas_gate(jid, "b1", ("paused",), "resumed_pending")
+
+    def test_redrive_leg_continues_trace_and_tokens(self):
+        cp = {"branch_ref": "b1", "step_index": 1, "tokens": 120,
+              "steps_json": json.dumps([STEP_A1]), "cont_state": 0,
+              "budget_remaining_tokens": 480, "stop_reason": "paused_by_request"}
+        calls = []
+        trace = redrive_from_checkpoint(
+            None, "m", base_cfg(), time.monotonic() + 30, cp,
+            chat=_script_chat_by_call([{"kind": "decision",
+                                        "content": "второй шаг: сверяем контракт с журналом"},
+                                       STEP_A2], calls))
+        # seeded step re-emerges in the trace; two fresh legs join after it
+        assert trace["steps"][0] == STEP_A1 and len(trace["steps"]) == 3
+        assert trace["tokens"] == 220  # seeded 120 + 2 fresh steps × 50
+
+    def test_redrive_from_checkpoint_helper_seeds_state(self):
+        self._queued_fork("fj_rd1")
+        cps = fem.get_checkpoints("fj_rd1", "b1")
+        assert cps[-1]["step_index"] == 1
+        calls = []
+        trace = redrive_from_checkpoint(
+            None, "m", base_cfg(depth_default=1, depth_max=2),
+            time.monotonic() + 30, cps[-1],
+            chat=_script_chat_by_call([STEP_A1, STEP_A2], calls))
+        assert len(calls) <= 1          # only one leg fits under depth_max=2
+        assert trace["tokens"] >= 120   # previous spend carried over
+
+    def test_driver_claims_by_cas_and_double_claim_loses(self):
+        self._queued_fork("fj_rd2")
+        work = fem.resumed_pending_work("s-redrive")
+        assert ("fj_rd2", "b1") in work
+        # first driver wins the claim...
+        jid, ref = work[work.index(("fj_rd2", "b1"))]
+        assert fem.cas_gate(jid, ref, ("resumed_pending",), "running", holder="me")
+        # ...second driver's identical claim finds nothing queued anymore
+        assert ("fj_rd2", "b1") not in fem.resumed_pending_work("s-redrive")
+
+    def test_dead_on_arrival_resume_heals_via_sweep_then_driver(self, monkeypatch):
+        # fork died with its row 'running' and a dead holder: sweep → paused,
+        # then the pause→resume→redrive chain works end to end without any
+        # live thread or in-memory flag.
+        fem.ensure_gate_rows("fj_rd3", ["b1"], holder="999999:42")
+        swept = fem.sweep_crashed_gates(my_holder=fem.proc_stamp())
+        assert swept >= 1
+        row = fem.get_gate("fj_rd3", "b1")
+        assert row["state"] == "paused" and row["reason"] == "crashed"
+        assert fem.cas_gate("fj_rd3", "b1", ("paused",), "resumed_pending")
+        fem.write_run({"join_id": "fj_rd3", "session_id": "s-redrive",
+                       "strategy": "select", "branches": [{"ref": "b1"}]})
+        fem.write_checkpoint("fj_rd3", {"branch_ref": "b1", "step_index": 1,
+                                        "tokens": 50, "cont_state": 0,
+                                        "steps": [STEP_A1]})
+        from tools import fork_explore_tool as fet
+        monkeypatch.setattr(fet, "_chat",
+                            lambda *a, **kw: (json.dumps(STEP_A2), 50))
+        from tools.fork_explore_tool import _redrive_session_forks
+        done = _redrive_session_forks(
+            "s-redrive", base_cfg(depth_default=1, depth_max=2), None, "m")
+        assert done == 1
+        # healed: driver took ownership and the row now reads running
+        assert fem.get_gate("fj_rd3", "b1")["state"] == "running"
+
+    def test_group_row_expands_to_branch_work(self):
+        self._queued_fork("fj_rd4")
+        fem.ensure_gate_rows("fj_rd4g", ["b1", "b2"], holder="9:9")
+        fem.cas_gate("fj_rd4g", "", ("running",), "paused")
+        fem.cas_gate("fj_rd4g", "", ("paused",), "resumed_pending")
+        work = fem.resumed_pending_work("s-other-session")
+        assert all(jid != "fj_rd4" for jid, _ in work)  # other sessions filtered
+
