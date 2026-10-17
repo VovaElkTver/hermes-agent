@@ -141,7 +141,83 @@ def _shrink(packet: dict[str, Any]) -> bool:
         if len(str(br.get("summary", ""))) > 120:
             br["summary"] = str(br["summary"])[:117] + "..."
             return True
+    # Later stages (verify 17.10): the fattest scalars before the hard trim.
+    for br in result.get("branches", []):
+        for field in ("key_findings", "risks"):
+            lst = br.get(field) or []
+            if any(len(str(x)) > 80 for x in lst):
+                br[field] = [str(x)[:77] + "..." if len(str(x)) > 80 else x for x in lst]
+                return True
+            if len(lst) > 2:
+                br[field] = lst[:2]
+                return True
+    if len(result.get("branches") or []) > 2:
+        result["branches"] = result["branches"][:2]
+        return True
+    if packet.get("intents") and len(packet["intents"]) > 4:
+        packet["intents"] = packet["intents"][:4]
+        return True
+    winner = packet.get("winner") or {}
+    if len(str(winner.get("direction", ""))) > 160:
+        winner["direction"] = str(winner["direction"])[:157] + "..."
+        return True
+    if len(str(result.get("summary", ""))) > 160:
+        result["summary"] = str(result["summary"])[:157] + "..."
+        return True
     return False
+
+
+def _minimal_packet(packet: dict[str, Any], keep: int) -> dict[str, Any]:
+    """Deterministic last-resort packet: the DECISION survives, the bulk dies.
+
+    The old path string-sliced the serialized blob and re-closed braces with a
+    `+ "}}"` hack — json.loads usually failed and the fallback hardcoded
+    strategy='reject', silently overturning a live 'select' with its winner
+    (found by the :8012 dogfood, 17.10). Never overturn a verdict to fit size:
+    winner/strategy/journal_ref stay, long text is what gets cut.
+    """
+    winner = packet.get("winner")
+    prov = packet.get("provenance") or {}
+    out: dict[str, Any] = {
+        "join_id": packet.get("join_id"),
+        "base_version": packet.get("base_version"),
+        "strategy": packet.get("strategy"),
+        "winner": None if not winner else {
+            "path_ref": winner.get("path_ref"),
+            "score": winner.get("score"), "margin": winner.get("margin"),
+            "summary": str(winner.get("summary", ""))[:200],
+            "direction": str(winner.get("direction", ""))[:200]},
+        "result": {"summary": str((packet.get("result") or {}).get("summary", ""))[:200],
+                   "branches": [
+                       {"ref": b.get("ref"), "status": b.get("status"),
+                        "score": b.get("score"),
+                        "summary": str(b.get("summary", ""))[:80]}
+                       for b in (packet.get("result") or {}).get("branches", [])[:2]],
+                   "open_issues": [str(i)[:120] for i in
+                                   ((packet.get("result") or {}).get("open_issues") or [])[:3]]},
+        "provenance": {"journal_ref": prov.get("journal_ref", ""),
+                       "k": prov.get("k"), "tokens_total": prov.get("tokens_total"),
+                       # calibration inputs must survive the last resort too
+                       # (shadow_stats/SPEC 7.4): clusters compacted to sizes.
+                       "score_weights": prov.get("score_weights") or {},
+                       "clusters": [
+                           {"rep": c.get("rep") if isinstance(c, dict) else None,
+                            "size": (c.get("size") or len(c.get("members") or []))
+                            if isinstance(c, dict) else 0}
+                           for c in (prov.get("clusters") or [])[:4]]},
+        "_truncated": True,
+    }
+    blob = json.dumps(out, ensure_ascii=False)
+    if len(blob) > keep * 4:  # still too fat: halve the fattest scalar until it fits
+        while len(json.dumps(out, ensure_ascii=False)) > keep * 4:
+            s = out["result"]["summary"]
+            if len(s) <= 40:
+                out["winner"] = None if not out["winner"] else {**out["winner"], "direction": ""}
+                s = str((out["winner"] or {}).get("summary", ""))
+            if not s:
+                break
+            out["result"]["summary"] = s[: max(20, len(s) // 2)]
+    return out
 
 
 def enforce_size(packet: dict[str, Any], max_tokens: int) -> tuple[dict[str, Any], bool]:
@@ -153,19 +229,13 @@ def enforce_size(packet: dict[str, Any], max_tokens: int) -> tuple[dict[str, Any
     while _shrink(packet):
         blob = json.dumps(packet, ensure_ascii=False)
         if estimate_tokens_rough(blob) <= max_tokens:
-            return packet, False
+            # policy shrink did it — still report the trim: the consumer's
+            # _note must say the packet was cut, however it was cut
+            return packet, True
     keep = max(16, max_tokens - 32)
-    clipped = blob[: keep * 4]
-    clipped = clipped[: clipped.rfind("}")] + "}}"
-    try:
-        packet = json.loads(clipped)
-        packet["_truncated"] = True
-    except ValueError:
-        packet = {"join_id": packet.get("join_id"), "strategy": "reject",
-                  "result": {"summary": blob[: keep * 4], "open_issues": ["packet hard-truncated"]},
-                  "_truncated": True}
-    # Re-serialization can re-escape quotes and grow the blob again: guarantee the
-    # cap by halving the fattest remaining string until it fits.
+    # Last resort keeps the decision (see _minimal_packet); string-slicing the
+    # blob was the 17.10 dogfood bug that turned a live 'select' into 'reject'.
+    packet = _minimal_packet(packet, keep)
     blob = json.dumps(packet, ensure_ascii=False)
     while estimate_tokens_rough(blob) > max_tokens:
         summary = str(packet.get("result", {}).get("summary", ""))

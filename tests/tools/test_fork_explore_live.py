@@ -77,6 +77,14 @@ def test_live_fork_pr2_vs_pr3(tmp_path, monkeypatch):
         assert packet["strategy"] in ("select", "select_with_caveat", "synthesize")
     assert estimate_tokens_rough(json.dumps(packet, ensure_ascii=False)) <= 1500
     assert res["journal_ref"].startswith("journal://forks/")
+    # PR-2: scoring breakdown must be journaled, never context-leaked
+    assert packet["provenance"]["clusters"]
+    assert packet["provenance"]["score_weights"].get("judge")
     from tools import fork_explore_journal
     run = fork_explore_journal.get_run(packet["join_id"])
     assert run and len(run["branches"]) >= 2
+    for br in run["branches"]:
+        comps = json.loads(br["score_components_json"])
+        assert "judge_win_rate" in comps and "consensus" in comps
+    stats = fork_explore_journal.shadow_stats()
+    assert stats["runs"] >= 1 and stats["wasted_tokens"] >= 0

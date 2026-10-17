@@ -61,8 +61,12 @@ def _tokens(text: str) -> set[str]:
 def fact_conflicts(trace: dict, facts: Optional[list[str]]) -> list[str]:
     """Deterministic non-contradiction check against confirmed facts (two tiers):
     1. explicit: a step says `"contradicts": N` (fact number) → hard conflict;
-    2. heuristic: the step restates ≥ 60% of a fact's content-word core and
-       carries a negation cue → probable conflict (conservative by design).
+    2. heuristic: the step restates ≥ 60% of a fact's content-word core AND
+       a negation cue sits within ±2 tokens of one of the fact's core words —
+       positional adjacency, because branch steps legitimately RESTATE facts
+       while carrying unrelated negations elsewhere ("журнал уже пишет
+       fork_rate, но без боёвки" is an echo, "журнал не пишет fork_rate" is a
+       contradiction; verified against a live :8012 false positive).
     Soft/semantic contradictions are NOT this gate's job — the blind judge sees
     the confirmed facts and scores those down."""
     conflicts: list[str] = []
@@ -76,8 +80,17 @@ def fact_conflicts(trace: dict, facts: Optional[list[str]]) -> list[str]:
                 conflicts.append(f"шаг явно противоречит факту {i}")
             if len(ft) < 3:
                 continue
-            st = _tokens(str(s.get("content") or ""))
-            if st and (st & _NEGATIONS) and len(ft & st) / len(ft) >= _FACT_OVERLAP:
+            ordered = [t for t in _TOKEN_RE.findall(str(s.get("content") or "").lower())
+                       if len(t) > 1]
+            overlap = sum(1 for t in ordered if t in ft and t not in _STOP)
+            if not ordered or overlap / len(ft) < _FACT_OVERLAP:
+                continue
+            negated_core = any(
+                (t in ft and t not in _STOP) and
+                any(w in _NEGATIONS or w.startswith(("не", "ни", "без"))
+                    for w in ordered[max(0, pos - 2):pos + 3])
+                for pos, t in enumerate(ordered))
+            if negated_core:
                 conflicts.append(f"шаг отрицает факт {i}")
     return sorted(set(conflicts))
 

@@ -40,6 +40,7 @@ def base_cfg(**over):
         "read_roots": [], "branch_endpoint": {},
         "judge": {"max_tokens": 4000},
         "cluster_similarity": 0.8,
+        "bad_json_retry": False,
         "score_weights": {"judge": 0.70, "consensus": 0.25, "cost": 0.05},
         "early_stop_consensus": True,
     }
@@ -180,6 +181,36 @@ class TestBranchRollout:
                            time.monotonic() + 30)
         assert trace["stop_reason"] == "infeasible"
         assert len(trace["steps"]) == 1  # ранняя остановка, depth не дожидается
+
+    def test_bad_json_retry_once_recovers_truncated_step(self):
+        # Единственный санкционированный retry (SPEC 5.3): первый ответ — проза
+        # без JSON (обрезанная thought), холодный повтор спасает шаг; второй
+        # подряд bad_json — финал, бесконечных ретраев нет.
+        seen = {"n": 0}
+
+        def flaky(client, model, messages, *, max_tokens, temperature, timeout,
+                  seed=None, no_think=True):
+            seen["n"] += 1
+            if temperature == 0.1:          # именно холодный retry-вызов
+                return json.dumps(STEP_A1), 60
+            return "рассуждение без обещанного JSON…", 200
+
+        trace = run_branch(None, "m", [], "b1", "стратегия",
+                           base_cfg(depth_default=1, depth_max=1,
+                                    bad_json_retry=True),
+                           time.monotonic() + 30, chat=flaky)
+        assert seen["n"] == 2 and trace["stop_reason"] == "depth_cap"
+        assert trace["steps"] == [STEP_A1]       # шаг спасён, не error-заглушка
+
+        def always_bad(client, model, messages, **kw):
+            seen["n"] = 0
+            return "не JSON", 100
+
+        trace2 = run_branch(None, "m", [], "b1", "стратегия",
+                            base_cfg(depth_default=1, depth_max=1,
+                                     bad_json_retry=True),
+                            time.monotonic() + 30, chat=always_bad)
+        assert trace2["stop_reason"] == "bad_json"
 
     def test_read_roots_confine_reads(self, tmp_path):
         f = tmp_path / "ok.txt"
@@ -366,6 +397,33 @@ class TestJoinGuard:
         assert estimate_tokens_rough(json.dumps(out, ensure_ascii=False)) <= 1500
         assert out["join_id"] == "fj_1"  # identity survives trimming
 
+    def test_hard_trim_never_overturns_a_select_into_reject(self):
+        """Dogfood :8012, 17.10: a fat but decided packet must come back
+        TRUNCATED, not rejected — strategy/winner/journal_ref survive the cap."""
+        fat = {"join_id": "fj_2", "base_version": 7, "strategy": "select",
+               "winner": {"path_ref": "B", "score": 0.9, "margin": 0.9,
+                          "summary": "В-победа " * 400, "direction": "вектор B " * 400},
+               "result": {"summary": "В-победа " * 400, "direction": "x " * 800,
+                          "branches": [{"ref": f"b{i}", "status": "rejected", "score": 0.1,
+                                        "summary": "длинный отчёт ветки " * 120,
+                                        "key_findings": ["находка " * 60] * 6,
+                                        "risks": ["риск " * 60] * 6} for i in range(4)],
+                          "open_issues": ["ишуй " * 80] * 9},
+               "intents": [{"tool": f"t{i}", "args": {"p": "д" * 200}, "reversible": True,
+                            "idempotency_key": "k" * 70} for i in range(12)],
+               "rejected_alternatives": [{"branch_ref": f"b{i}", "reason": "y" * 600}
+                                         for i in range(6)],
+               "provenance": {"journal_ref": "journal://forks/fj_2", "k": 4,
+                              "tokens_total": 9001, "clusters": [{"members": ["A"] * 300}]}}
+        out, truncated = enforce_size(json.loads(json.dumps(fat)), 1500)
+        assert truncated
+        assert estimate_tokens_rough(json.dumps(out, ensure_ascii=False)) <= 1500
+        assert out["strategy"] == "select"                 # вердикт не переиначен
+        assert out["winner"]["path_ref"] == "B"            # победитель не потерян
+        assert out["provenance"]["journal_ref"] == "journal://forks/fj_2"
+        assert out["_truncated"] is True                   # факт обрезки виден
+        assert json.dumps(out["winner"]) not in json.dumps(out["result"]["branches"])
+
 
 # ---------------------------------------------------------------- handler E2E
 
@@ -425,6 +483,17 @@ class TestHandlerE2E:
         assert res["ok"] and res["packet"]["strategy"] == "select_with_caveat"
         assert any("margin" in i for i in res["packet"]["result"]["open_issues"])
 
+    def test_packet_never_crosses_cap_even_with_trim_note(self, monkeypatch):
+        # Контракт <= join_max_tokens абсолютный: заметка о тримминге,
+        # приклеенная ПОСЛЕ урезания, не имеет права его пересечь (live :8012
+        # поймал 1508 > 1500 именно на ней).
+        llm = _fake_llm({"b1": [STEP_A1, STEP_A2], "b2": [STEP_B1, STEP_B2]},
+                        judge_policy="b1")
+        res = _run_handler(monkeypatch, llm, cfg_over={"join_max_tokens": 420})
+        blob = json.dumps(res["packet"], ensure_ascii=False)
+        assert estimate_tokens_rough(blob) <= 420
+        assert res["packet"]["join_id"] == res["join_id"]  # идентичность жива
+
     def test_registry_dispatch_reaches_handler(self, monkeypatch):
         from tools.registry import registry
         llm = _fake_llm({"b1": [STEP_A1, STEP_A2], "b2": [STEP_B1, STEP_B2]})
@@ -453,6 +522,8 @@ class TestHandlerE2E:
         # PR-2: причина отказа поимённая — какие именно гейты упали
         reasons = [r["reason"] for r in res["packet"]["rejected_alternatives"]]
         assert all(r.startswith("hard gates: ") and "feasible" in r for r in reasons)
+        # PR-2: reject журналует СТРУКТУРУ форка (кластеры траекторий), а не пусто
+        assert res["packet"]["provenance"]["clusters"]
 
     def test_judge_down_degrades_to_select_with_caveat(self, monkeypatch):
         class Boom(FakeLLM):
@@ -547,6 +618,52 @@ class TestHandlerE2E:
         assert synth_branch["gates"]["facts_ok"] is False
 
 
+# ---------------------------------------------------------------- PR-2 chat params
+class TestChatThinkingParams:
+    def test_no_think_sent_then_rejection_falls_back_and_memos(self, monkeypatch):
+        from tools import fork_explore_tool as fet
+        monkeypatch.setattr(fet, "_CHAT_TEMPLATE_KWARGS_REJECTED", False,
+                            raising=False)
+
+        class Completions:
+            def __init__(self, reject_once=False):
+                self.reject_once = reject_once
+                self.attempts = []
+
+            def create(self, **kwargs):
+                self.attempts.append(kwargs)
+                if self.reject_once and "extra_body" in kwargs:
+                    raise RuntimeError("Error code: 400 - Extra inputs are not "
+                                       "permitted: 'chat_template_kwargs'")
+                msg = SimpleNamespace(content='{"ok": true}')
+                return SimpleNamespace(choices=[SimpleNamespace(message=msg)],
+                                       usage=SimpleNamespace(completion_tokens=5))
+
+        def client_with(comp):
+            return SimpleNamespace(chat=SimpleNamespace(completions=comp))
+
+        comp = Completions(reject_once=True)
+        _text, tokens = fet._chat(client_with(comp), "m", [{"role": "user", "content": "x"}],
+                                 max_tokens=100, temperature=0.1, timeout=5.0)
+        assert tokens == 5
+        assert "extra_body" in comp.attempts[0]          # первая попытка с параметром
+        assert "extra_body" not in comp.attempts[1]      # fallback без него
+        fet._chat(client_with(comp), "m", [{"role": "user", "content": "y"}],
+                  max_tokens=100, temperature=0.1, timeout=5.0)
+        assert "extra_body" not in comp.attempts[-1]     # мемо: больше не стучимся
+
+        monkeypatch.setattr(fet, "_CHAT_TEMPLATE_KWARGS_REJECTED", False,
+                            raising=False)
+        comp2 = Completions(reject_once=False)
+        fet._chat(client_with(comp2), "m", [{"role": "user", "content": "z"}],
+                  max_tokens=100, temperature=0.1, timeout=5.0)
+        assert comp2.attempts[0]["extra_body"] == {
+            "chat_template_kwargs": {"enable_thinking": False}}
+        fet._chat(client_with(comp2), "m", [{"role": "user", "content": "w"}],
+                  max_tokens=100, temperature=0.1, timeout=5.0, no_think=False)
+        assert "extra_body" not in comp2.attempts[-1]    # конфиг thinking-on
+
+
 # ---------------------------------------------------------------- PR-2 shadow journal
 
 class TestShadowJournal:
@@ -570,3 +687,204 @@ class TestShadowJournal:
         assert stats["fork_rate"] > 0
         assert stats["wasted_tokens"] > 0              # проигравшая ветка учтена
         assert 0.0 <= stats["wasted_share"] <= 1.0
+
+    def test_self_preference_flag_when_judge_is_branch_model(self, monkeypatch):
+        llm = _fake_llm({"b1": [STEP_A1, STEP_A2], "b2": [STEP_B1, STEP_B2]},
+                        judge_policy="b1")
+        res = _run_handler(monkeypatch, llm, session_id="s-selfpref")
+        assert any("self-preference" in i
+                   for i in res["packet"]["result"]["open_issues"])
+
+    def test_separate_judge_clears_self_preference_flag(self, monkeypatch):
+        llm = _fake_llm({"b1": [STEP_A1, STEP_A2], "b2": [STEP_B1, STEP_B2]},
+                        judge_policy="b2")
+        cfg = base_cfg(judge={"base_url": "http://judge.local:8012/v1",
+                              "max_tokens": 4000})
+        monkeypatch.setattr(fork_explore_config, "load_fork_config", lambda: cfg)
+        monkeypatch.setattr(
+            fork_explore_config, "resolve_chat_client",
+            lambda ep, task: (llm, "judge-model" if (ep or {}).get("base_url")
+                              else "fake-model"))
+        res = json.loads(fork_explore(_args(), session_id="s-crossjudge"))
+        issues = res["packet"]["result"]["open_issues"]
+        assert not any("self-preference" in i for i in issues)
+        assert res["packet"]["provenance"]["judge_model"] == "judge-model"
+
+
+# ------------------------------------------------- verify step: shadow_only + depth ceiling
+
+class TestShadowOnlyDefault:
+    """Решение 17.10: `shadow_only: true` — ОТДЕЛЬНЫЙ дефолт (не `enabled`):
+    журнал ведётся, боевого fan-out'а нет; боёвка после калибровки (SPEC 7.4)."""
+
+    def test_default_is_shadow_and_reader_honours_override(self, tmp_path, monkeypatch):
+        from hermes_cli.fork_defaults import DEFAULT_FORK_EXPLORE
+        assert DEFAULT_FORK_EXPLORE["shadow_only"] is True  # separate key, not `enabled`
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        assert fork_explore_config.load_fork_config()["shadow_only"] is True  # built-in
+        # the override path: presence-sensitive user config wins over the default
+        (home / "config.yaml").write_text(
+            "fork_explore:\n  shadow_only: false\n", encoding="utf-8")
+        assert fork_explore_config.load_fork_config()["shadow_only"] is False
+
+    def test_shadow_run_is_journaled_not_battled(self, monkeypatch):
+        llm = _fake_llm({"b1": [STEP_A1, STEP_A2], "b2": [STEP_B1, STEP_B2]},
+                        judge_policy="b2")
+        res = _run_handler(monkeypatch, llm, args_over={"session_id": "s-shadow"})
+        assert res["ok"] and res["packet"]["provenance"]["shadow_only"] is True
+        run = fork_explore_journal.get_run(res["join_id"])
+        assert run and run["status"] == "shadow"
+        assert fork_explore_journal.shadow_stats()["runs_shadow"] >= 1
+
+    def test_battle_mode_flips_journal_status(self, monkeypatch):
+        llm = _fake_llm({"b1": [STEP_A1, STEP_A2], "b2": [STEP_B1, STEP_B2]},
+                        judge_policy="b1")
+        res = _run_handler(monkeypatch, llm, cfg_over={"shadow_only": False})
+        assert res["packet"]["provenance"]["shadow_only"] is False
+        run = fork_explore_journal.get_run(res["join_id"])
+        assert run and run["status"] == "joined"
+
+
+class TestDepthCeiling:
+    """Приёмка: `depth<=depth_max` — потолок, не семантика (ветка вправе
+    остановиться раньше; запрошенное больше depth_max зажимается)."""
+
+    def test_requested_depth_clamped_into_ceiling(self):
+        from tools.fork_explore_tool import resolve_rollout_depth
+        cfg = base_cfg(depth_default=2, depth_max=3)
+        assert resolve_rollout_depth(cfg, None) == 2       # default applies
+        assert resolve_rollout_depth(cfg, 1) == 1          # shallower is fine
+        assert resolve_rollout_depth(cfg, 99) == 3         # ceiling enforced
+        assert resolve_rollout_depth(cfg, 0) == 1          # never below one step
+        assert resolve_rollout_depth(cfg, "4") == 3        # LLM string form clamps too
+        assert resolve_rollout_depth(cfg, "junk") == 2     # non-numeric → default
+
+    def test_handler_honours_depth_argument(self, monkeypatch):
+        llm = _fake_llm({"b1": [STEP_A1, STEP_A2], "b2": [STEP_B1, STEP_B2]},
+                        judge_policy="b1")
+        res = _run_handler(monkeypatch, llm, args_over={"depth": 1})
+        run = fork_explore_journal.get_run(res["join_id"])
+        assert run
+        assert json.loads(run["params_json"])["cfg"]["depth_default"] == 1
+        for br in run["branches"]:
+            assert len(json.loads(br["steps_json"])) == 1  # остановилась на потолке
+
+
+# ------------------------------------- PR-2 contract v4: пошаговая пауза (17.10)
+
+class TestStepwisePause:
+    """Ветка выполнила шаг → СТОИТ на границе → «продолжай»/«прервись».
+    Меж-шаговый гейт отсекает бесперспективное ДО следующего prefill+decode;
+    перспективные углубляются избирательно; пауза внутренняя, возобновление —
+    per-branch continue-flag (единый примитив с будущим control-socket verb)."""
+
+    @staticmethod
+    def _script_chat(steps, calls):
+        def chat(client, model, messages, **kw):
+            calls.append(kw.get("seed"))
+            done = sum(1 for m in messages if m["role"] == "assistant")
+            step = steps[min(done, len(steps) - 1)]
+            return json.dumps(step), 50
+        return chat
+
+    def test_fact_conflict_pruned_before_next_request(self):
+        # Шаг 1 противоречит подтверждённому факту → ветка встала на границе,
+        # второй chat-запрос НЕ отправлен (prefill+decode не потрачен).
+        calls = []
+        conflict = {"kind": "decision", "content": "судья :8012 не жив, SGLang упал"}
+        trace = run_branch(None, "m", [], "b1", "с",
+                           base_cfg(depth_default=2, depth_max=3),
+                           time.monotonic() + 30,
+                           chat=self._script_chat([conflict, STEP_A2], calls),
+                           facts=["судья :8012 жив на SGLang"])
+        assert len(calls) == 1 and trace["stop_reason"] == "fact_conflict"
+        assert len(trace["steps"]) == 1
+
+    def test_forbidden_intent_pruned_at_boundary(self):
+        calls = []
+        step = {"kind": "action", "content": "хочу выполнить команду в оболочке",
+                "intents": [{"tool": "terminal", "args": {}, "reversible": True}]}
+        trace = run_branch(None, "m", [], "b1", "с",
+                           base_cfg(depth_default=2, depth_max=3,
+                                    forbidden_tools=["terminal"]),
+                           time.monotonic() + 30,
+                           chat=self._script_chat([step, STEP_A2], calls))
+        assert len(calls) == 1 and trace["stop_reason"] == "forbidden_intent"
+
+    def test_continue_flag_stops_branch_on_boundary(self):
+        # Внешний «прервись» ТЕМ ЖЕ примитивом: флаг опущен на первой границе —
+        # запрос второго шага не уходит, ветка стоит с полным чекпоинтом.
+        from tools.fork_explore_rollout import BranchRoller, ContinueFlag
+        calls = []
+        flag = ContinueFlag()
+
+        def stop_at_first_boundary(cp):
+            if cp["step_index"] >= 1:
+                flag.stop()
+
+        roller = BranchRoller(None, "m", base_cfg(depth_default=2, depth_max=3),
+                              time.monotonic() + 30, cont=flag.get,
+                              checkpoint=stop_at_first_boundary,
+                              chat=self._script_chat([STEP_A1, STEP_A2], calls))
+        trace = roller.run([], "b1", "с")
+        assert len(calls) == 1 and trace["stop_reason"] == "paused_by_request"
+        assert trace["steps"] == [STEP_A1]
+
+    def test_stalled_trajectory_halted_before_ceiling(self):
+        # Модель жует одну и ту же мысль → no_progress на второй границе,
+        # потолок depth_max=3 даже не запрашивается.
+        calls = []
+        stall = {"kind": "action", "content": "одна и та же мысль про контракт интерфейса"}
+        trace = run_branch(None, "m", [], "b1", "с",
+                           base_cfg(depth_default=1, depth_max=3),
+                           time.monotonic() + 30,
+                           chat=self._script_chat([stall] * 3, calls))
+        assert len(calls) == 2 and trace["stop_reason"] == "no_progress"
+
+    def test_fresh_steps_deepen_selectively_to_ceiling(self):
+        # План depth_default=2, потолок 3: каждый шаг приносит новое —
+        # перспективная ветка углубляется до потолка.
+        calls = []
+        steps = [
+            {"kind": "action", "content": "собираем требования и контракт интерфейса"},
+            {"kind": "decision", "content": "прогоняем лоад-тест отмен на эндпоинте"},
+            {"kind": "action", "content": "калибруем порог мержа по журналу судей"},
+        ]
+        trace = run_branch(None, "m", [], "b1", "с",
+                           base_cfg(depth_default=2, depth_max=3),
+                           time.monotonic() + 30,
+                           chat=self._script_chat(steps, calls))
+        assert len(calls) == 3 and trace["stop_reason"] == "depth_cap"
+
+    def test_request_stop_targets_live_flags(self):
+        from tools import fork_explore_tool as fet
+        from tools.fork_explore_rollout import ContinueFlag
+        f1, f2 = ContinueFlag(), ContinueFlag()
+        fet._ACTIVE_FORK_FLAGS["fj_x"] = {"b1": f1, "b2": f2}
+        try:
+            assert fet.request_stop("fj_x", "b1") == 1 and not f1.get() and f2.get()
+            assert fet.request_stop("fj_x") == 1 and not f2.get()
+            assert fet.request_stop("fj_x", "nope") == 0
+            assert fet.request_stop("fj_missing") == 0
+        finally:
+            fet._ACTIVE_FORK_FLAGS.pop("fj_x", None)
+
+    def test_boundaries_checkpoint_trace_budget_step_index(self, monkeypatch):
+        # Каждй переход границы — checkpoint в fork journal: trace, бюджет,
+        # step_index. Ветка, отсечённая ДО join, полностью остаётся в журнале.
+        calls = []
+        conflict = {"kind": "decision", "content": "судья :8012 не жив, SGLang упал"}
+        trace = run_branch(None, "m", [], "b1", "с",
+                           base_cfg(depth_default=2, depth_max=3),
+                           time.monotonic() + 30,
+                           chat=self._script_chat([conflict, STEP_A2], calls),
+                           facts=["судья :8012 жив на SGLang"],
+                           join_id="fj_cp_test")
+        assert trace["stop_reason"] == "fact_conflict"
+        cps = fork_explore_journal.get_checkpoints("fj_cp_test", "b1")
+        assert [c["step_index"] for c in cps] == [0, 1]     # старт + граница шага 1
+        assert json.loads(cps[1]["steps_json"]) == [conflict]
+        assert cps[1]["tokens"] > 0
+        assert 0 < cps[1]["budget_remaining_tokens"] <= 3 * 200

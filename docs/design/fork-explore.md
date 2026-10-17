@@ -102,8 +102,38 @@ read_roots=[], branch_endpoint{}, judge{} (флот пинит :8012; ключ F
   journal: trace, бюджет, step_index), возобновление — per-branch flag.
   Внешний преэмпт (task-b78849c10d) позже ложится сверху как control-socket
   verb «не планировать следующий шаг» — сходится с тем же примитивом;
-- в PR-1 `run_branch` крутит всю глубину циклом (непрерывный роллаут) —
-  перенос на пошаговую паузу = PR-2, контракт v4.
+- в PR-1 `run_branch` крутил всю глубину циклом (непрерывный роллаут) —
+  перенос на пошаговую паузу = PR-2, контракт v4: `tools/fork_explore_rollout.py`
+  (`BranchRoller` + `inter_step_gate` + `ContinueFlag`). Реализовано:
+  * граница шага = точка, в которой следующий chat-запрос ЕЩЁ не отправлен;
+    `inter_step_gate` (детерминированный, дешёвый: bad_json/infeasible/
+    forbidden_intent/fact_conflict/no_progress/deadline/token_cap/depth_cap)
+    плюс план-vs-потолок: сверх `depth_default` ветка углубляется только при
+    новизне последнего шага (≥0.5), иначе `selective_halt`;
+  * `depth` в аргументе инструмента — потолок этого форка (зажимается к
+    `depth_max`), ветка вправе встать раньше на любой границе;
+  * каждая граница пишет checkpoint (trace/бюджет/step_index/cont_state) в
+    `fork_journal.db`, таблица `fork_checkpoint` — ветка, отсечённая до join,
+    остаётся в журнале полностью; журнал ведётся и в shadow-режиме.
+
+### Сшивка с внешним преэмтом (task-b78849c10d) — предложение
+
+Единый примитив — per-branch `ContinueFlag` (уже живой в `run_branch`),
+внешний контроль — только thin verb поверх него, второго механизма нет:
+
+1. `fork_explore_tool._ACTIVE_FORK_FLAGS[join_id][ref]` — реестр флагов
+   живых форков процесса; `request_stop(join_id, ref="")` — единственная
+   точка входа преэмпта (возвращает число реально переведённых in-stop).
+2. Control-socket verb `fork.pause <join_id> [ref]` (и `fork.resume`) —
+   диспетчер гейтвея дергает `request_stop`/`flag.resume()`; ветка реагирует
+   на СВОЕЙ следующей границе (stop_reason=`paused_by_request`), не посреди
+   decode — инвариант «cancel = обрыв клиента» для уже идущего запроса
+   сохранён (load-тест PASS: слот освобождается за ~0.5 с).
+3. Возобновление после паузы — по чекпоинту из `fork_checkpoint`
+   (trace/step_index/бюджет): перестроить `messages` = prefix + suffix +
+   сохранённые шаги, продолжить цикл с флагом resume. Кэш-фазу SGLang это
+   только выигрывает: граница шага есть готовая точка переиспользования
+   префикса.
 
 ## Тени и боёвка
 
@@ -111,12 +141,66 @@ Shadow-метрики за ОТДЕЛЬНЫМ `fork_explore.shadow_only: true` (
 гейт журналит решение, боевого fan-out'а нет. Боёвка — только после
 калибровки по журналу (fork_rate / win_over_default / wasted_tokens).
 
-## Статус / dogfood
+## Статус / dogfood (PR-2, 17.10)
 
-Unit: 26/26 зелёные (`.venv/bin/python -m pytest tests/tools/test_fork_explore.py`).
-Live (:8012, `test_fork_explore_live.py`, skipped by default): конвейер
-пройден целиком — fan-out→гейты→судья→JoinPacket→журнал, budget enforced;
-на живой модели ветки упёрлись в schema_ok (glm-5.3-flash не вернул строгий
-JSON за 600 токенов — фолбэк сработал штатно: reject + open_issue + журнал).
-Калибровка branch-промпта/температуры под живой судью — следующий шаг перед
-shadow-боем.
+Scoring-конвейер PR-2 активен: hard gates (schema/feasible/intents_ok/facts_ok)
+→ кластеризация траекторий (rep судится один раз, размер кластера = consensus)
+→ слепой swap-pairwise судья (:8012) → агрегат S (judge 0.70 / consensus 0.25 /
+cost 0.05, logprob L_i=0 — OpenAI-совместимый surface его не отдаёт) → margin
+`min_margin_delta`; synthesize-путь В проходит те же гейты и тот же журнал.
+Разбивка балла пишется в `fork_branch.score_components_json`;
+`shadow_stats()` считает fork_rate / win_over_default / wasted_tokens /
+gate_reject_rate (окно — аргумент).
+
+Live-контракт SGLang :8012 (проверено вживую):
+- cancel = обрыв клиента: load-тест `scripts/fork_cancel_loadtest.py` PASS,
+  батч-слоты освободились за 526 мс при k=6, очереди дренируются;
+- thinking-модели списывают reasoning_tokens ВНУТРЬ completion-бюджета и
+  обрезают JSON шага (зафиксировано: finish=length, 58/70). Все fork-вызовы
+  идут с `chat_template_kwargs.enable_thinking=false` (extra_body), relay'и без
+  поддержки параметра — авто-fallback с мемо на процесс
+  (`disable_thinking` в конфиге);
+- branches при этом штатно проходят schema_ok и укладываются в бюджет шага.
+
+Gates против фактов — позиционная эвристика: отрицание засчитывается только в
+пределах ±2 токенов от опорных слов факта (эхо факта с далёким «без/не» — не
+конфликт; ложноположительный случай найден live-догодом и закрыт тестом).
+
+Unit: 43/43 зелёные (`scripts/run_tests.sh tests/tools/test_fork_explore.py`).
+Live (`FORK_DOGFOOD_LIVE=1 test_fork_explore_live.py`): роллауты и судья
+проходят целиком, select c margin подтверждён; наблюдалась модель-индуцированная
+аномалия packet (внутренний select-JSON, эхо в summary при внешнем reject) —
+контрактный тест её поймал; разбор отложен до следующего шага.
+Боёвка не включена: ждём калибровку по shadow-журналу (SPEC 7.4/13.4).
+
+### Что закрыто этим шагом (17.10, вечер)
+
+- Live-dogfood против `:8012/glm-5.3-flash` через `fork_explore_handler`
+  (`FORK_DOGFOOD_LIVE=1`, opt-in): межшаговый гейт режет ДО следующего prefill
+  на живых данных — ветки с `fact_conflict`/`forbidden_intent` остановлены на
+  199–254 tok одним запросом; собраны и `select` с judge-матчами, и честный
+  `reject`.
+- Контрактный дефект #1 (нашёл только live): `_note` о тримминге, клеившийся
+  ПОСЛЕ enforce_size, пересекал потолок (1508 > 1500) — заметка теперь
+  снимается, если сама лезет за кап; тест-парния в TestHandlerE2E.
+- Контрактный дефект #2: при `reject` `provenance.clusters` был `[]` —
+  теперь reject журналует структуру форка (кластеры по всем приземлившимся
+  трассам; судья видит только прошедшие гейты). После фикса — 3/3 зелёных
+  live-прогона.
+- Thinking/429--hardening живёт в самом live-тесте (не в production-path):
+  судейский HTTP 429 — environment, ретраится с backoff; `thinking` —
+  отдельный config-key (см. «Тени и боёвка» выше про enable_thinking).
+- Seam внешних пауз: `fork.pause`/`fork.resume` — тонкая обёртка над
+  `fork_explore_tool.request_stop()` / `ContinueFlag.resume()` (флаг ветки
+  читается на ЕЁ следующей границе; decode уже идущего запроса не рвём —
+  инвариант cancel из load-теста сохранён). Шерсть контроллера
+  (`/att` → continue/pause/resume, scoped targets) — в plugins/controller,
+  от этого PR намеренно отделена; consumer-wiring остаётся на шаге b.
+- Калибровка K (внешний deadline): живые замеры —
+  `scripts/fork_k_deadline_calibration.py` (одиночные latency p95; k=4/k=8
+  wall-time; ceiling = max wall-time; budget = 3×ceiling; env
+  FORK_K_LIVE/FORK_K_LIVE_ENDPOINT). Модельная сетка + разбор «deadline
+  cross-path ≠ deadline budget» — в тексте скрипта.
+- Итог проверок: 45 unit зелёные (`scripts/run_tests.sh
+  tests/tools/test_fork_explore.py`) + live-файл (1 тест, вне дефолта) зелёный
+  на `:8012`, `scripts/check` — 12 checks ok.

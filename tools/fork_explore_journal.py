@@ -55,6 +55,22 @@ CREATE TABLE IF NOT EXISTS fork_branch (
 );
 CREATE INDEX IF NOT EXISTS idx_fork_branch_run ON fork_branch(join_id);
 CREATE INDEX IF NOT EXISTS idx_fork_run_session ON fork_run(session_id, created_at);
+-- PR-2 contract v4 (пошаговая пауза): checkpoint ветки на КАЖДОЙ границе шага —
+-- trace/бюджет/step_index. Ветка, отсечённая меж-шаговым гейтом до join,
+-- остаётся в журнале полностью; возобновление читает состояние отсюда.
+CREATE TABLE IF NOT EXISTS fork_checkpoint (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  join_id TEXT NOT NULL,
+  branch_ref TEXT NOT NULL,
+  step_index INTEGER NOT NULL,
+  created_at REAL NOT NULL,
+  tokens INTEGER NOT NULL DEFAULT 0,
+  budget_remaining_tokens INTEGER NOT NULL DEFAULT 0,
+  cont_state INTEGER,
+  stop_reason TEXT NOT NULL DEFAULT '',
+  steps_json TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_fork_cp_run ON fork_checkpoint(join_id, branch_ref, step_index);
 """
 
 
@@ -109,8 +125,43 @@ def write_run(run: dict[str, Any]) -> str:
         if keep:
             marks = ",".join("?" * len(keep))
             db.execute(f"DELETE FROM fork_branch WHERE join_id NOT IN ({marks})", keep)
+            db.execute(f"DELETE FROM fork_checkpoint WHERE join_id NOT IN ({marks})", keep)
             db.execute(f"DELETE FROM fork_run WHERE join_id NOT IN ({marks})", keep)
     return f"journal://forks/{run['join_id']}"
+
+
+def write_checkpoint(join_id: str, cp: dict[str, Any]) -> None:
+    """One branch-boundary checkpoint (stepwise pause). Cheap single-row insert;
+    concurrent branch threads each open their own short transaction — the
+    busy_timeout absorbs lock contention, and a lost checkpoint is diagnostics,
+    never a fork failure (caller must still never die on it)."""
+    path = journal_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path, timeout=2.0) as db:
+        _ensure_schema(db)
+        db.execute(
+            "INSERT INTO fork_checkpoint (join_id, branch_ref, step_index, created_at,"
+            " tokens, budget_remaining_tokens, cont_state, stop_reason, steps_json)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (join_id, cp.get("branch_ref", ""), int(cp.get("step_index", 0)),
+             time.time(), int(cp.get("tokens", 0)),
+             int(cp.get("budget_remaining_tokens", 0)),
+             (None if cp.get("cont_state") is None else int(cp["cont_state"])),
+             cp.get("stop_reason", ""),
+             json.dumps(cp.get("steps") or [], ensure_ascii=False)))
+
+
+def get_checkpoints(join_id: str, branch_ref: str) -> list[dict[str, Any]]:
+    """Boundary history of one branch, oldest first — the resume view
+    (trace/budget/step_index at every pause point)."""
+    path = journal_path()
+    if not path.exists():
+        return []
+    with sqlite3.connect(path, timeout=2.0) as db:
+        db.row_factory = sqlite3.Row
+        return [dict(r) for r in db.execute(
+            "SELECT * FROM fork_checkpoint WHERE join_id=? AND branch_ref=?"
+            " ORDER BY step_index, id", (join_id, branch_ref)).fetchall()]
 
 
 def get_run(join_id: str) -> dict[str, Any] | None:
@@ -156,21 +207,22 @@ def shadow_stats(window_s: float = 604800.0) -> dict[str, Any]:
                          to fork where no direction survived)
     """
     path = journal_path()
-    empty = {"window_s": window_s, "runs": 0, "fork_rate": 0.0,
+    empty = {"window_s": window_s, "runs": 0, "runs_shadow": 0, "fork_rate": 0.0,
              "win_over_default": None, "wasted_tokens": 0, "wasted_share": 0.0,
              "gate_reject_rate": 0.0}
     if not path.exists():
         return empty
     with sqlite3.connect(path) as db:
         rows = db.execute(
-            "SELECT strategy, winner_ref, params_json, tokens_total, wasted_tokens"
+            "SELECT strategy, winner_ref, params_json, tokens_total, wasted_tokens, status"
             " FROM fork_run WHERE created_at >= ?", (time.time() - window_s,)).fetchall()
     runs = len(rows)
     if not runs:
         return empty
-    decided = over_default = rejected = 0
+    decided = over_default = rejected = shadow_runs = 0
     tokens_sum = wasted_sum = 0
-    for strategy, winner_ref, params_json, tokens_total, wasted in rows:
+    for strategy, winner_ref, params_json, tokens_total, wasted, status in rows:
+        shadow_runs += int((status or "joined") == "shadow")
         tokens_sum += int(tokens_total or 0)
         wasted_sum += int(wasted or 0)
         rejected += int(strategy == "reject")
@@ -186,6 +238,7 @@ def shadow_stats(window_s: float = 604800.0) -> dict[str, Any]:
     return {
         "window_s": window_s,
         "runs": runs,
+        "runs_shadow": shadow_runs,
         "fork_rate": round(runs / max(window_s / 86400.0, 1e-9), 3),
         "win_over_default": (round(over_default / decided, 3) if decided else None),
         "wasted_tokens": wasted_sum,

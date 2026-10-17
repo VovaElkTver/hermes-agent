@@ -14,7 +14,7 @@ Read-only по построению: в ветке исполняется ТОЛ
 роллаута. Желания ветки оформляет intents (needs_approval для необратимых),
 выполняет их главная сессия после join.
 
-Design doc (путь к cache-fork через SGLang RadixAttention): docs/fork-explore-design.md.
+Design doc (путь к cache-fork через SGLang RadixAttention): docs/design/fork-explore.md.
 Spec: ~/projects/fork-reasoning/SPEC.md (v1.0, 17.10.2026).
 """
 
@@ -29,10 +29,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Optional
 
+from tools.fork_explore_rollout import ContinueFlag  # contract v4: пошаговая пауза
 from tools.fork_explore_scoring import (  # scoring pipeline (PR-2, SPEC §7):
     # hard gates → clustering → blind swap-pairwise judge → aggregate with margin
-    _digest_text, hard_gates, judge_pair, majority_reached, passing_traces,
-    tournament)
+    _digest_text, cluster_traces, hard_gates, judge_pair, majority_reached,
+    passing_traces, tournament)
 
 logger = logging.getLogger(__name__)
 
@@ -49,19 +50,49 @@ SYNTH_SYSTEM = """Ты — синтезатор развилки. Тебе да�
 
 # --------------------------------------------------------------------------- chat
 
+# Providers that 400 on chat_template_kwargs (non-SGLang/vLLM relays) are memoed
+# for the process; the first call falls back once, later calls skip the field —
+# same ladder shape as agent/auxiliary_structured_output's response_format memo.
+_CHAT_TEMPLATE_KWARGS_REJECTED = False
+
+
 def _chat(client: Any, model: str, messages: list[dict], *, max_tokens: int,
-          temperature: float, timeout: float, seed: Optional[int] = None) -> tuple[str, int]:
+          temperature: float, timeout: float, seed: Optional[int] = None,
+          no_think: bool = True) -> tuple[str, int]:
     """One OpenAI-compatible chat call; returns (content, completion_tokens).
     Abandoning the future on deadline is our cancel — the server stops the
-    generation when the client connection closes (verify: load-test script
-    scripts/fork_cancel_loadtest.py, run in PR-2/verify)."""
+    generation when the client connection closes (verified live:
+    scripts/fork_cancel_loadtest.py PASS, slot freed in 0.5s).
+
+    Thinking models (GLM/Qwen on SGLang) bill reasoning_tokens INSIDE the
+    completion budget and truncate the JSON answer at tokens_per_step_max —
+    verified live on :8012 (finish=length, reasoning 58/70). Fork steps and
+    judge verdicts are cheap structured turns, so thinking is disabled via
+    chat_template_kwargs.enable_thinking; providers that reject the parameter
+    fall back to plain calls once and remember.
+    """
+    global _CHAT_TEMPLATE_KWARGS_REJECTED
     kwargs: dict[str, Any] = {"model": model, "messages": messages,
                               "temperature": temperature, "max_tokens": max_tokens,
                               "timeout": max(1.0, timeout),
                               "response_format": {"type": "json_object"}}
     if seed is not None:
         kwargs["seed"] = seed
-    resp = client.chat.completions.create(**kwargs)
+    if no_think and not _CHAT_TEMPLATE_KWARGS_REJECTED:
+        kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+    try:
+        resp = client.chat.completions.create(**kwargs)
+    except Exception as exc:  # only to classify a param rejection; else re-raise
+        text = str(exc).lower()
+        if "extra_body" in kwargs and ("chat_template_kwargs" in text
+                                       or "enable_thinking" in text):
+            _CHAT_TEMPLATE_KWARGS_REJECTED = True
+            logger.info("fork_explore: endpoint rejects chat_template_kwargs; "
+                        "continuing with thinking enabled")
+            kwargs.pop("extra_body")
+            resp = client.chat.completions.create(**kwargs)
+        else:
+            raise
     usage = getattr(resp, "usage", None)
     tokens = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
     return (resp.choices[0].message.content or ""), tokens
@@ -103,61 +134,49 @@ def _safe_read(path_str: str, roots: list[str]) -> Optional[str]:
 
 
 def run_branch(client: Any, model: str, prefix: list[dict], ref: str, strategy: str,
-               cfg: dict, deadline: float,
-               chat: Callable = _chat) -> dict[str, Any]:
-    """Simulated rollout of one path: depth model steps forward, read-only by
-    construction (chat + bounded reads; writes exist only as intents)."""
-    from tools.fork_explore_prefix import build_branch_suffix, step_instruction
-    messages = list(prefix) + [build_branch_suffix(ref, strategy)]
-    steps: list[dict] = []
-    intents: list[dict] = []
-    reads: list[str] = []
-    tokens = 0
-    stop_reason = "depth_exhausted"
-    t0 = time.monotonic()
-    depth = min(int(cfg["depth_default"]), int(cfg["depth_max"]))
-    for step_no in range(1, depth + 1):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            stop_reason = "deadline"
-            break
-        content, used = chat(client, model, messages,
-                             max_tokens=int(cfg["tokens_per_step_max"]),
-                             temperature=float(cfg["temperature"]),
-                             timeout=min(60.0, remaining), seed=17)
-        tokens += used
-        step = _parse_json(content)
-        if step is None:
-            stop_reason = "bad_json"
-            steps.append({"kind": "error", "content": content[:300]})
-            break
-        messages.append({"role": "assistant", "content": json.dumps(step, ensure_ascii=False)})
-        steps.append(step)
-        for it in step.get("intents") or []:
-            if isinstance(it, dict):
-                intents.append(it)
-        if bool(step.get("infeasible")):
-            stop_reason = "infeasible"
-            break
-        if str(step.get("kind", "")) == "stop":
-            stop_reason = "complete"
-            break
-        if str(step.get("kind", "")) == "read_request":
-            chunks = []
-            for p in (step.get("paths") or [])[:_MAX_READS_PER_BRANCH - len(reads)]:
-                text = _safe_read(str(p), cfg.get("read_roots") or [])
-                if text is not None:
-                    reads.append(str(p))
-                    chunks.append(f"<file path=\"{p}\">\n{text}\n</file>")
-            messages.append({"role": "user",
-                             "content": "Данные файлов (только для чтения):\n"
-                                        + "\n".join(chunks) if chunks else
-                                        "Чтение недоступно (вне read_roots или пусто)."})
-        else:
-            messages.append(step_instruction(step_no + 1, depth))
-    return {"ref": ref, "strategy_text": strategy, "steps": steps, "intents": intents,
-            "reads": reads, "tokens": tokens, "latency_ms": int((time.monotonic() - t0) * 1000),
-            "stop_reason": stop_reason}
+               cfg: dict, deadline: float, chat: Optional[Callable] = None, *,
+               facts: Optional[list[str]] = None,
+               cont: Optional[ContinueFlag] = None,
+               join_id: str = "") -> dict[str, Any]:
+    """Simulated rollout of one path — contract v4: ПОШАГОВАЯ ПАУЗА.
+
+    Each model step ends at a boundary where the branch stands still; the
+    inter-step gate (tools/fork_explore_rollout.py) decides «continue» vs
+    «stop» BEFORE the next prefill+decode is paid for, and every boundary
+    checkpoints trace/бюджет/step_index into the fork journal. depth_default
+    is the plan, depth_max only the ceiling (selective deepening past the
+    plan requires a novel step). External preemption rides the same primitive:
+    ``cont`` (ContinueFlag) — a control-socket verb later just flips it.
+    Read-only by construction: chat + bounded reads; writes exist as intents.
+    """
+    from tools.fork_explore_journal import write_checkpoint
+    from tools.fork_explore_rollout import BranchRoller
+    checkpoint = ((lambda cp, jid=join_id: write_checkpoint(jid, cp))
+                  if join_id else None)
+    roller = BranchRoller(client, model, cfg, deadline,
+                          facts=facts, cont=(cont.get if cont else None),
+                          checkpoint=checkpoint, chat=chat)
+    return roller.run(prefix, ref, strategy)
+
+
+# Per-branch continue flags of in-flight forks: join_id -> {ref -> ContinueFlag}.
+# The future control-socket verb «не планировать следующий шаг» (сшивка с
+# task-b78849c10d) is just request_stop() below — no second mechanism.
+_ACTIVE_FORK_FLAGS: dict[str, dict[str, ContinueFlag]] = {}
+
+
+def request_stop(join_id: str, ref: str = "") -> int:
+    """Внешний преэмпт живых веток форка: опустить per-branch continue-flag.
+    Ветка остановится на своей следующей границе шага (не посреди decode).
+    ref="" — все ветки форка. Возвращает число ФАКТИЧЕСКИ переведённых
+    in-stop флагов (идемпотентно: уже стоящая on-stop ветка не считается)."""
+    flags = _ACTIVE_FORK_FLAGS.get(join_id) or {}
+    targets = ([flags[ref]] if ref in flags
+               else ([] if ref else list(flags.values())))
+    stopped = sum(1 for f in targets if f.get())
+    for f in targets:
+        f.stop()
+    return stopped
 
 
 # --------------------------------------------------------------------------- synthesize (путь В)
@@ -194,6 +213,19 @@ def _new_join_id() -> str:
     return time.strftime("fj_%Y%m%d_%H%M%S_") + secrets.token_hex(2)
 
 
+def resolve_rollout_depth(cfg: dict, requested: Any) -> int:
+    """depth — ПОТОЛОК, не семантика (приёмка PR-2): запрошенная глубина
+    зажимается в [1, depth_max]; отсутствующая/нечислимая → depth_default
+    (тоже под потолком). Ветка вправе остановиться раньше (infeasible/stop/
+    deadline/early-stop) — потолок это только разрешает."""
+    fallback = int(cfg["depth_default"])
+    try:
+        want = fallback if requested is None else int(requested)
+    except (TypeError, ValueError):
+        want = fallback
+    return max(1, min(int(cfg["depth_max"]), want))
+
+
 def _resolve_base_version(args: dict, session_id: str) -> Optional[int]:
     bv = args.get("base_version")
     if isinstance(bv, int):
@@ -214,7 +246,7 @@ def _resolve_base_version(args: dict, session_id: str) -> Optional[int]:
 
 def _judge_and_synthesize(cfg: dict, task: str, criteria: str, prefix: list, deadline: float,
                           client: Any, model: str, judge_client: Any, judge_model: str,
-                          traces: list, facts: list[str]
+                          traces: list, facts: list[str], join_id: str = ""
                           ) -> tuple[str, list, dict, list, list]:
     """PR-2 scoring pipeline (SPEC §7): hard gates → trajectory clustering →
     blind swap-pairwise judge on cluster reps → aggregate S = w_j*J + w_c*C − w_$*cost.
@@ -222,9 +254,21 @@ def _judge_and_synthesize(cfg: dict, task: str, criteria: str, prefix: list, dea
     mutates traces (a synthesized В joins them as a full participant: the same
     gates — including facts_ok — and the same journal)."""
     open_issues: list[str] = []
+    if judge_model and judge_model == model:
+        # SPEC 7.3 self-preference: the judge should be another model than the
+        # branches. The fork still runs (blindness + swap control bias), but the
+        # main session must see that the ranking is not cross-model verified.
+        open_issues.append("судья = модель веток (self-preference риск, SPEC 7.3) — "
+                           "для критичных решений задайте fork_explore.judge отдельно")
     passing = passing_traces(traces, cfg, facts)
     if not passing:
-        return "reject", [], {}, ["ни одна ветка не прошла hard gates"], []
+        # Reject still journals the fork STRUCTURE: clustering runs over every
+        # landed trace (the judge simply never sees gate-failed routes).
+        clusters = [{"rep": c["rep"], "members": list(c["members"])}
+                    for c in cluster_traces(
+                        traces, float(cfg.get("cluster_similarity", 0.8)))]
+        return ("reject", [], {},
+                open_issues + ["ни одна ветка не прошла hard gates"], clusters)
     fact_gated = sorted(t["ref"] for t in traces if not t["gates"]["facts_ok"])
     if fact_gated:
         open_issues.append("отсеяны гейтом противоречия фактам: " + ", ".join(fact_gated))
@@ -234,7 +278,9 @@ def _judge_and_synthesize(cfg: dict, task: str, criteria: str, prefix: list, dea
     def judge_chat(msgs, max_tokens=None):
         return _chat(judge_client, judge_model, msgs,
                      max_tokens=int(max_tokens or jmt), temperature=0.0,
-                     timeout=min(60.0, max(1.0, deadline - time.monotonic())))
+                     timeout=min(60.0, max(1.0, deadline - time.monotonic())),
+                     no_think=bool((cfg.get("judge") or {}).get("disable_thinking",
+                                                                True)))
 
     ranked, meta = tournament(judge_chat, task, criteria, passing, facts,
                               float(cfg.get("cluster_similarity", 0.8)),
@@ -264,12 +310,14 @@ def _judge_and_synthesize(cfg: dict, task: str, criteria: str, prefix: list, dea
     def synth_chat(msgs, max_tokens):
         return _chat(client, model, msgs, max_tokens=max_tokens,
                      temperature=float(cfg["temperature"]),
-                     timeout=min(60.0, max(1.0, deadline - time.monotonic())))
+                     timeout=min(60.0, max(1.0, deadline - time.monotonic())),
+                     no_think=bool(cfg.get("disable_thinking", True)))
 
     synth = maybe_synthesize(cfg, synth_chat, task, criteria, ranked,
                              {t["ref"]: flaws.get(t["ref"], []) for t in ranked})
     if synth:
-        st = run_branch(client, model, prefix, synth["ref"], synth["strategy"], cfg, deadline)
+        st = run_branch(client, model, prefix, synth["ref"], synth["strategy"],
+                        cfg, deadline, facts=facts, join_id=join_id)
         st["gates"] = hard_gates(st, cfg, facts)
         st["gates_ok"] = all(st["gates"].values())
         st["failed_gates"] = [k for k, v in st["gates"].items() if not v]
@@ -315,6 +363,15 @@ def fork_explore(args: dict, session_id: str = "") -> str:
     if len(paths) < 2:
         return json.dumps({"ok": False, "error": "paths deduplicated to <2 (too similar)"})
 
+    # depth — потолок, не семантика: запрошенная глубина зажимается к
+    # depth_max и на этом форке становится ПОТОЛКОМ (ветка вправе встать
+    # раньше на любой границе шага); без запроса — план depth_default с
+    # избирательным углублением до depth_max (contract v4).
+    depth = resolve_rollout_depth(cfg, args.get("depth"))
+    cfg = dict(cfg, depth_default=depth)
+    if args.get("depth") is not None:
+        cfg = dict(cfg, depth_max=depth)
+
     # budget-lite: refuse before burning if this session's 24h fork spend is exhausted
     spent = session_tokens_used(session_id)
     est_cost = len(paths) * int(cfg["depth_default"]) * int(cfg["tokens_per_step_max"])
@@ -338,35 +395,43 @@ def fork_explore(args: dict, session_id: str = "") -> str:
     join_id = _new_join_id()
     deadline = time.monotonic() + float(cfg["fork_deadline_s"])
 
-    def branch_job(p):
-        return run_branch(client, model, prefix, p["ref"], p["strategy"], cfg, deadline)
+    def branch_job(p, flag):
+        return run_branch(client, model, prefix, p["ref"], p["strategy"], cfg,
+                          deadline, facts=facts, cont=flag, join_id=join_id)
 
     t_start = time.monotonic()
     traces: list = []
+    # Пошаговая пауза (contract v4): у каждой живой ветки свой continue-flag;
+    # внешний преэмпт (request_stop) гасит его, ветка встаёт на границе шага.
+    flags = {p["ref"]: ContinueFlag() for p in paths}
+    _ACTIVE_FORK_FLAGS[join_id] = flags
     # Early stop (SPEC 5.4): once ⌈k/2⌉+1 equivalent gate-passing branches have
     # landed, queued branches are cancelled (running ones keep their own deadline
     # — an in-flight HTTP call is only freed by disconnect; see design doc).
-    with ThreadPoolExecutor(max_workers=min(int(cfg["k_max"]), len(paths))) as pool:
-        futures = [pool.submit(branch_job, p) for p in paths]
-        try:
-            for fut in as_completed(futures, timeout=max(1.0, deadline - time.monotonic())):
-                try:
-                    traces.append(fut.result())
-                except (TimeoutError, RuntimeError, OSError) as exc:
-                    logger.debug("fork branch dropped before join: %s", exc, exc_info=True)
-                if bool(cfg.get("early_stop_consensus", True)) and \
-                        majority_reached(traces, cfg, facts, len(paths)):
-                    for other in futures:
-                        other.cancel()
-        except TimeoutError:
-            # fan-out deadline: unfinished branches exit the fork (wasted tokens
-            # they already burned stay charged in the journal)
-            logger.debug("fork fan-out deadline reached with %d/%d traces",
-                         len(traces), len(paths), exc_info=True)
+    try:
+        with ThreadPoolExecutor(max_workers=min(int(cfg["k_max"]), len(paths))) as pool:
+            futures = [pool.submit(branch_job, p, flags[p["ref"]]) for p in paths]
+            try:
+                for fut in as_completed(futures, timeout=max(1.0, deadline - time.monotonic())):
+                    try:
+                        traces.append(fut.result())
+                    except (TimeoutError, RuntimeError, OSError) as exc:
+                        logger.debug("fork branch dropped before join: %s", exc, exc_info=True)
+                    if bool(cfg.get("early_stop_consensus", True)) and \
+                            majority_reached(traces, cfg, facts, len(paths)):
+                        for other in futures:
+                            other.cancel()
+            except TimeoutError:
+                # fan-out deadline: unfinished branches exit the fork (wasted tokens
+                # they already burned stay charged in the journal)
+                logger.debug("fork fan-out deadline reached with %d/%d traces",
+                             len(traces), len(paths), exc_info=True)
+    finally:
+        _ACTIVE_FORK_FLAGS.pop(join_id, None)
 
     strategy, ranked, _flaws, open_issues, clusters = _judge_and_synthesize(
         cfg, task, criteria, prefix, deadline, client, model,
-        judge_client, judge_model or model, traces, facts)
+        judge_client, judge_model or model, traces, facts, join_id)
     tokens_total = sum(t["tokens"] for t in traces)
 
     per_branch = [{
@@ -405,6 +470,7 @@ def fork_explore(args: dict, session_id: str = "") -> str:
                 for b in per_branch if b["status"] != "winner"]
     provenance = {"k": len(paths), "depth": cfg["depth_default"], "prefix_hash": phash,
                   "branch_model": model, "judge_model": judge_model,
+                  "shadow_only": bool(cfg.get("shadow_only", True)),
                   "clusters": clusters,
                   "score_weights": cfg.get("score_weights") or {},
                   "tokens_total": tokens_total,
@@ -415,16 +481,26 @@ def fork_explore(args: dict, session_id: str = "") -> str:
     packet = sanitize(packet)
     packet, truncated = enforce_size(packet, int(cfg["join_max_tokens"]))
     if truncated:
-        packet.setdefault("_note", "JoinPacket was size-trimmed")
+        packet["_note"] = "JoinPacket was size-trimmed"
+        # the cap is the contract, the note is decoration: if the note itself
+        # crosses the line it was just trimmed to, the note goes away
+        from agent.model_metadata import estimate_tokens_rough
+        if estimate_tokens_rough(json.dumps(packet, ensure_ascii=False)) \
+                > int(cfg["join_max_tokens"]):
+            packet.pop("_note")
 
     write_run({"join_id": join_id, "session_id": session_id, "strategy": strategy,
+               # shadow_only (решение 17.10): журнал ведётся, боевого fan-out'а
+               # нет — run помечается shadow, калибровка SPEC 7.4 идёт по этим
+               # строкам журнала.
+               "status": "shadow" if bool(cfg.get("shadow_only", True)) else "joined",
                "winner": winner, "prefix_hash": phash,
                "params": {"paths": paths, "cfg": {k: cfg.get(k) for k in
                                                   ("depth_default", "depth_max",
                                                    "tokens_per_step_max", "temperature",
                                                    "fork_deadline_s", "min_margin_delta",
                                                    "cluster_similarity", "score_weights",
-                                                   "early_stop_consensus")}},
+                                                   "early_stop_consensus", "shadow_only")}},
                "packet": packet, "tokens_total": tokens_total,
                "wasted_tokens": provenance["wasted_tokens"],
                "latency_ms": int((time.monotonic() - t_start) * 1000),
@@ -476,6 +552,9 @@ FORK_EXPLORE_SCHEMA: dict[str, Any] = {
                            "description": "Каталоги, которые веткам разрешено читать (read-only)."},
             "base_version": {"type": "integer",
                              "description": "Версия контекста, на которой строился форк (для optimistic join)."},
+            "depth": {"type": "integer",
+                      "description": "Потолок глубины роллаута на ветку (зажимается к fork_explore.depth_max; "
+                                     "ветка может остановиться раньше). Не задан — depth_default."},
         },
         "required": ["task", "shared_context", "paths"],
     },

@@ -11,6 +11,12 @@ from __future__ import annotations
 DEFAULT_FORK_EXPLORE: dict = {
     # Master switch; also gates tool availability (check_fn). Off = tool hidden.
     "enabled": True,
+    # Решение 17.10 (Архитектор): боёвка только после калибровки. Shadow-режим —
+    # отдельный дефолт, НЕ тот же флаг, что enabled: роллаут исполняется и
+    # решение журналируется (fork_run.status='shadow'), но боевого fan-out'а
+    # нет — JoinPacket помечен advisory, автоматического ForkGate-форка нет.
+    # Флот переключает на false по данным shadow_stats() (SPEC 7.4 / 13.4).
+    "shadow_only": True,
     # Fan-out: paths per fork (clamped), adaptive k lives with ForkGate (PR-3).
     "k_max": 4,
     # Rollout depth: модельных шагов вперёд на ветку (default / hard ceiling).
@@ -18,7 +24,12 @@ DEFAULT_FORK_EXPLORE: dict = {
     "depth_max": 3,
     # Completion cap per branch step and per-branch sampling temperature.
     "tokens_per_step_max": 1000,
+    "bad_json_retry": True,
     "temperature": 0.7,
+    # SGLang/vLLM thinking models bill reasoning inside the completion cap and
+    # truncate fork-step JSON (verified live :8012). Disable thinking for fork
+    # calls; relays that reject chat_template_kwargs auto-fall-back once.
+    "disable_thinking": True,
     # Wall-clock for the whole fan-out incl. judge; over-budget branches are cancelled
     # (cancel = client disconnect; server frees the batch slot — see docs/fork-explore-design.md).
     "fork_deadline_s": 90,
@@ -49,7 +60,7 @@ DEFAULT_FORK_EXPLORE: dict = {
     # Blind comparative judge (another model than the branches, SPEC 7.3). Empty
     # base_url falls back to the branch endpoint; the fleet pins SGLang :8012 here.
     "judge": {"base_url": "", "model": "", "api_key_env": "FORK_JUDGE_API_KEY",
-              "max_tokens": 4000},
+              "max_tokens": 4000, "disable_thinking": True},
 }
 
 # OPTIONAL_ENV_VARS contribution (same entry shape as _env() produces there).
