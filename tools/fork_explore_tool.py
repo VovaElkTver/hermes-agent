@@ -153,10 +153,28 @@ def run_branch(client: Any, model: str, prefix: list[dict], ref: str, strategy: 
     from tools.fork_explore_rollout import BranchRoller
     checkpoint = ((lambda cp, jid=join_id: write_checkpoint(jid, cp))
                   if join_id else None)
+    # Гейт продолжения (PR-2b): БД — источник истины, флаг — кэш fast-path
+    # одного tool-call'а. Логика «стоп» sticky по ИЛИ: любой из двух источников,
+    # сказавший «стой», останавливает ветку на границе.
+    cont_fn = None
+    if cont is not None:
+        cont_fn = cont.get if not join_id \
+            else (lambda: cont.get() and _gate_open(join_id, ref))
     roller = BranchRoller(client, model, cfg, deadline,
-                          facts=facts, cont=(cont.get if cont else None),
+                          facts=facts, cont=cont_fn,
                           checkpoint=checkpoint, chat=chat)
     return roller.run(prefix, ref, strategy)
+
+
+def _gate_open(join_id: str, ref: str) -> bool:
+    """DB-side continuation gate (fork_gate table); failures degrade to open —
+    a lost pause signal must never kill a live rollout."""
+    try:
+        from tools.fork_explore_journal import gate_open
+        return gate_open(join_id, ref)
+    except (sqlite3.Error, OSError) as exc:
+        logger.debug("fork gate read %s/%s failed: %s", join_id, ref, exc)
+        return True
 
 
 # Per-branch continue flags of in-flight forks: join_id -> {ref -> ContinueFlag}.
@@ -405,6 +423,13 @@ def fork_explore(args: dict, session_id: str = "") -> str:
     # внешний преэмпт (request_stop) гасит его, ветка встаёт на границе шага.
     flags = {p["ref"]: ContinueFlag() for p in paths}
     _ACTIVE_FORK_FLAGS[join_id] = flags
+    # PR-2b: persistent twin of the flags above — what an external (possibly
+    # other-process) preemptor targets, and what survives a restart.
+    try:
+        from tools.fork_explore_journal import ensure_gate_rows, proc_stamp
+        ensure_gate_rows(join_id, list(flags), holder=proc_stamp())
+    except (sqlite3.Error, OSError) as exc:
+        logger.debug("fork gate register %s skipped: %s", join_id, exc)
     # Early stop (SPEC 5.4): once ⌈k/2⌉+1 equivalent gate-passing branches have
     # landed, queued branches are cancelled (running ones keep their own deadline
     # — an in-flight HTTP call is only freed by disconnect; see design doc).
@@ -428,6 +453,11 @@ def fork_explore(args: dict, session_id: str = "") -> str:
                              len(traces), len(paths), exc_info=True)
     finally:
         _ACTIVE_FORK_FLAGS.pop(join_id, None)
+        try:
+            from tools.fork_explore_journal import close_finished_gates
+            close_finished_gates(join_id)
+        except (sqlite3.Error, OSError) as exc:
+            logger.debug("fork gate teardown %s skipped: %s", join_id, exc)
 
     strategy, ranked, _flaws, open_issues, clusters = _judge_and_synthesize(
         cfg, task, criteria, prefix, deadline, client, model,

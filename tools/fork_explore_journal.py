@@ -14,12 +14,16 @@ never ``~/.hermes`` hardcoded (HX001).
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
 import time
 from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_hermes_home
+
+logger = logging.getLogger(__name__)
 
 _RETENTION_RUNS = 200
 
@@ -71,6 +75,23 @@ CREATE TABLE IF NOT EXISTS fork_checkpoint (
   steps_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_fork_cp_run ON fork_checkpoint(join_id, branch_ref, step_index);
+-- PR-2b (STITCH-DESIGN-8012 §5): persistent per-branch continuation gate.
+-- The in-memory ContinueFlag dies with the tool-call that owns the branch
+-- threads; everything that must survive restart lives here. Transitions are
+-- CAS-only (UPDATE ... WHERE state IN (...), rowcount decides the winner);
+-- branch_ref='' is the group row pausing every branch of the fork at once.
+CREATE TABLE IF NOT EXISTS fork_gate (
+  join_id     TEXT NOT NULL,
+  branch_ref  TEXT NOT NULL,
+  state       TEXT NOT NULL DEFAULT 'running',
+              -- running | paused | resumed_pending | closed
+  reason      TEXT NOT NULL DEFAULT '',
+              -- preempted | human | eval_terminal | budget | crashed | ''
+  holder      TEXT NOT NULL DEFAULT '',
+              -- '<pid>:<proc_start_btime>' of the last writer (§3.3C crash sweep)
+  updated_at  REAL NOT NULL,
+  PRIMARY KEY (join_id, branch_ref)
+);
 """
 
 
@@ -245,3 +266,117 @@ def shadow_stats(window_s: float = 604800.0) -> dict[str, Any]:
         "wasted_share": round(wasted_sum / tokens_sum, 3) if tokens_sum else 0.0,
         "gate_reject_rate": round(rejected / runs, 3),
     }
+
+
+# ------------------------------------------------------------------ fork_gate
+# Единственный владелец гейта продолжения (STITCH-DESIGN-8012 §2/§5): строка в
+# этой таблице — источник истины, ContinueFlag в памяти процесса — кэш fast-path
+# одного tool-call'а. Все переходы — CAS-UPDATE'ы; read-modify-write запрещён.
+
+BLOCKING_STATES = ("paused", "resumed_pending", "closed")
+
+
+def proc_stamp() -> str:
+    """'<pid>:<proc_start_btime>' — identity of this process as a gate holder;
+    survives pid reuse across reboots because btime differs."""
+    pid = os.getpid()
+    try:
+        with open("/proc/self/stat", "rb") as f:
+            fields = f.read().rsplit(b") ", 1)[1].split()
+        return f"{pid}:{fields[19].decode()}"  # field 22, starttime after jiffies
+    except (OSError, IndexError):
+        return f"{pid}:0"
+
+
+def holder_alive(holder: str) -> bool:
+    """True unless we can prove the holder process is gone (§3.3C crash sweep).
+    An unparseable stamp counts as alive — absence of evidence is not death."""
+    pid_raw = holder.split(":", 1)[0]
+    try:
+        return Path(f"/proc/{int(pid_raw)}").exists()
+    except ValueError:
+        return True
+
+
+def _connect(path: Path) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(path, timeout=2.0)
+
+
+def ensure_gate_rows(join_id: str, refs: list[str], holder: str = "") -> None:
+    """Register a fresh fan-out: one 'running' row per branch plus the ''
+    group-control row (§5: пауза всего форка одним UPDATE). INSERT OR IGNORE
+    so re-registering never clobbers a state an external writer already set."""
+    now = time.time()
+    with _connect(journal_path()) as db:
+        _ensure_schema(db)
+        db.executemany(
+            "INSERT OR IGNORE INTO fork_gate"
+            " (join_id, branch_ref, state, reason, holder, updated_at)"
+            " VALUES (?,?,'running','',?,?)",
+            [(join_id, ref, holder, now) for ref in ["", *refs]])
+
+
+def get_gate(join_id: str, ref: str = "") -> dict[str, Any] | None:
+    path = journal_path()
+    if not path.exists():
+        return None
+    with sqlite3.connect(path, timeout=2.0) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute(
+            "SELECT * FROM fork_gate WHERE join_id=? AND branch_ref=?",
+            (join_id, ref)).fetchone()
+    return dict(row) if row else None
+
+
+def gate_open(join_id: str, ref: str) -> bool:
+    """Boundary-side reader: the group row AND the branch row are both resolved,
+    'paused'/'resumed_pending' on either one stops the branch; 'closed' stops it
+    forever. A missing row is 'running' by default (forks older than PR-2b)."""
+    path = journal_path()
+    if not path.exists():
+        return True
+    with sqlite3.connect(path, timeout=2.0) as db:
+        states = dict(db.execute(
+            "SELECT branch_ref, state FROM fork_gate"
+            " WHERE join_id=? AND branch_ref IN (?, '')",
+            (join_id, ref)).fetchall())
+    own = states.get(ref, "running")
+    group = states.get("", "running")
+    if "closed" in (own, group):
+        return False
+    # DB wins conflicts with the in-memory cache: group pause blocks even if the
+    # local flag is still up, and a paused branch stays stopped through running.
+    return not (own in BLOCKING_STATES or group in BLOCKING_STATES)
+
+
+def cas_gate(join_id: str, ref: str, from_states: tuple[str, ...] | list[str],
+             to_state: str, reason: str = "", holder: str = "") -> bool:
+    """One compare-and-succeed transition; rowcount decides who won the race.
+    No-op on a state miss — callers translate that into their wire outcome."""
+    path = journal_path()
+    marks = ",".join("?" * len(from_states))
+    with _connect(path) as db:
+        _ensure_schema(db)
+        cur = db.execute(
+            f"UPDATE fork_gate SET state=?, reason=?, holder=?, updated_at=?"
+            f" WHERE join_id=? AND branch_ref=? AND state IN ({marks})",
+            (to_state, reason, holder, time.time(), join_id, ref, *from_states))
+        return cur.rowcount == 1
+
+
+def close_finished_gates(join_id: str) -> None:
+    """Fan-out teardown: rows still 'running' belong to threads that died with
+    the tool-call → closed. 'paused'/'resumed_pending' survive deliberately —
+    they are what lazy re-drive resumes from (§3.4)."""
+    try:
+        path = journal_path()
+        if not path.exists():
+            return
+        with sqlite3.connect(path, timeout=2.0) as db:
+            db.execute(
+                "UPDATE fork_gate SET state='closed', reason='completed',"
+                " holder=?, updated_at=? WHERE join_id=? AND state='running'",
+                (proc_stamp(), time.time(), join_id))
+    except (sqlite3.Error, OSError) as exc:
+        logger.debug("fork gate close for %s deferred: %s", join_id, exc)
