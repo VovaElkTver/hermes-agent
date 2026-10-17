@@ -9,11 +9,18 @@ Invariants under contract:
 """
 
 import json
+import sqlite3
+import threading
 import time
 
 from tools import fork_explore_journal as fem
+from tools import fork_explore_verbs as verbs
 from tools.fork_explore_rollout import BranchRoller, ContinueFlag, redrive_from_checkpoint
-from tools.fork_explore_tool import run_branch
+from tools.fork_explore_tool import (
+    _ACTIVE_FORK_FLAGS as _FLAGS,
+    _redrive_session_forks as driver,
+    run_branch,
+)
 
 
 def base_cfg(**over):
@@ -228,4 +235,144 @@ class TestLazyRedrive:
         fem.cas_gate("fj_rd4g", "", ("paused",), "resumed_pending")
         work = fem.resumed_pending_work("s-other-session")
         assert all(jid != "fj_rd4" for jid, _ in work)  # other sessions filtered
+
+
+class TestWireVerbs:
+    """fork-pause / fork-resume / fork-close: API layer over fork_gate.
+    Race contracts: CAS decides, errors distinguishable, double resume no-op,
+    resume-after-restart heals a dead-on-arrival fork."""
+
+    @staticmethod
+    def _fork_with_flags(jid, refs=("b1", "b2")):
+        fem.write_run({"join_id": jid, "session_id": "s-verbs", "strategy": "select",
+                       "branches": [{"ref": r} for r in refs]})
+        fem.ensure_gate_rows(jid, list(refs))
+        from tools import fork_explore_tool as fet
+        flags = {r: ContinueFlag() for r in refs}
+        fet._ACTIVE_FORK_FLAGS[jid] = flags
+        return flags
+
+    @classmethod
+    def _teardown_flags(cls, jid):
+        from tools import fork_explore_tool as fet
+        fet._ACTIVE_FORK_FLAGS.pop(jid, None)
+
+    def test_pause_result_wire_shape_and_live_flag_count(self):
+        jid = "fj_w1"
+        self._fork_with_flags(jid)
+        try:
+            out = verbs.pause_branch(jid, "b1")
+            assert out["ok"] and out["result"]["marked_paused"] == 1
+            assert out["result"]["stopped_inflight"] == 1
+            assert out["result"]["variant"] == "soft"
+            # same-process cache flipped with the DB row
+            flags = _FLAGS[jid]
+            assert not flags["b1"].get() and flags["b2"].get()
+            # second pause of the same branch is a distinct outcome
+            again = verbs.pause_branch(jid, "b1")
+            assert not again["ok"] and again["error"].startswith("already_paused")
+        finally:
+            self._teardown_flags(jid)
+
+    def test_pause_unknown_branch_reports_code(self):
+        out = verbs.pause_branch("fj_missing_entirely")
+        assert not out["ok"] and out["error"].startswith("unknown_branch")
+
+    def test_pause_after_close_is_already_closed(self):
+        jid = "fj_w3"
+        self._fork_with_flags(jid)
+        try:
+            assert verbs.close_branch(jid, "b1")["ok"]
+            out = verbs.pause_branch(jid, "b1")
+            assert not out["ok"] and out["error"].startswith("already_closed")
+        finally:
+            self._teardown_flags(jid)
+
+    def test_double_resume_noop(self):
+        jid = "fj_w4"
+        self._fork_with_flags(jid)
+        try:
+            assert verbs.pause_branch(jid, "b1")["ok"]
+            first = verbs.resume_branch(jid, "b1")
+            assert first["ok"] and first["result"]["queued_for_redrive"] == 1
+            second = verbs.resume_branch(jid, "b1")
+            assert second["ok"]
+            assert second["result"]["queued_for_redrive"] == 0  # no new effects
+            assert second["result"]["disposition"] == "deferred"
+        finally:
+            self._teardown_flags(jid)
+
+    def test_resume_of_running_is_already_running_error(self):
+        jid = "fj_w5"
+        self._fork_with_flags(jid)
+        try:
+            out = verbs.resume_branch(jid, "b1")
+            assert not out["ok"] and out["error"].startswith("already_running")
+        finally:
+            self._teardown_flags(jid)
+
+    def test_resume_after_restart_heals_dead_on_arrival(self):
+        # restart = the tool-call ended (flags registry dropped) + connection
+        # closed/reopened. Resume must queue the orphaned paused row, never err.
+        jid = "fj_w6"
+        self._fork_with_flags(jid)
+        fem.write_checkpoint(jid, {"branch_ref": "b1", "step_index": 2,
+                                   "tokens": 90, "cont_state": 0,
+                                   "steps": [STEP_A1, STEP_A1]})
+        assert verbs.pause_branch(jid, "")["ok"]          # whole-fork pause
+        self._teardown_flags(jid)                          # tool-call returned
+        fem.write_run({"join_id": jid, "session_id": "s-verbs",
+                       "strategy": "select", "branches": [{"ref": "b1"}]})
+        reopened = sqlite3.connect(fem.journal_path(), timeout=2.0)
+        reopened.execute("SELECT 1 FROM fork_gate").fetchone()
+        reopened.close()
+        out = verbs.resume_branch(jid, "")
+        assert out["ok"], out
+        assert out["result"]["queued_for_redrive"] >= 1
+        work = fem.resumed_pending_work("s-verbs")
+        assert ("fj_w6", "b1") in work                     # driver will replay
+
+    def test_gate_vs_close_race_cas_decides_one_winner(self):
+        # pause and close hit the same running row concurrently in-process;
+        # exactly one of them may flip it, the loser must report its code.
+        jid = "fj_w7"
+        self._fork_with_flags(jid)
+        try:
+            results: list = []
+            barrier = threading.Barrier(2)
+
+            def racer(fn, args):
+                barrier.wait()
+                results.append(fn(*args))
+
+            t1 = threading.Thread(target=racer, args=(verbs.pause_branch, (jid, "b1")))
+            t2 = threading.Thread(target=racer, args=(verbs.close_branch, (jid, "b1")))
+            t1.start(); t2.start(); t1.join(); t2.join()
+            # contract: every outcome well-formed, DB consistent, exactly one
+            # state transition chain survived — pause-then-close or close-then-pause
+            states = {r.get("result", {}).get("ref") for r in results}
+            assert states <= {"b1"}
+            row = fem.get_gate(jid, "b1")
+            if any(not r["ok"] for r in results):
+                loser = next(r for r in results if not r["ok"])
+                assert loser["error"].startswith("already_closed")
+                assert row["state"] == "closed"
+            else:
+                assert row["state"] == "closed"  # close always ends terminal
+        finally:
+            self._teardown_flags(jid)
+
+    def test_full_cycle_pause_resume_driver_settle(self):
+        jid = "fj_w8"
+        self._fork_with_flags(jid)
+        try:
+            assert verbs.pause_branch(jid, "")["ok"]
+            assert verbs.resume_branch(jid, "")["ok"]
+            assert fem.get_gate(jid, "")["state"] == "resumed_pending"
+            done = driver("s-verbs", base_cfg(), None, "m")
+            assert done == 0  # nothing to replay onto (no checkpoints): settled
+            assert fem.get_gate(jid, "")["state"] == "running"
+            assert fem.get_gate(jid, "b1")["state"] == "closed"  # fan-out ended
+        finally:
+            self._teardown_flags(jid)
 

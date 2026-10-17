@@ -408,6 +408,23 @@ def resumed_pending_work(session_id: str) -> list[tuple[str, str]]:
     return [p for p in out if not (p in seen or seen.add(p))]
 
 
+def settled_group(join_id: str) -> bool:
+    """After a fork's queued branches have been claimed by the driver, release
+    the group marker: once NO branch row is left ``resumed_pending``, the ''
+    row goes back to 'running' so later boundary reads see an open fork."""
+    path = journal_path()
+    if not path.exists():
+        return False
+    with sqlite3.connect(path, timeout=2.0) as db:
+        n = db.execute(
+            "SELECT COUNT(*) FROM fork_gate WHERE join_id=?"
+            " AND state='resumed_pending' AND branch_ref != ''",
+            (join_id,)).fetchone()[0]
+    if n:
+        return False
+    return cas_gate(join_id, "", ("resumed_pending",), "running")
+
+
 def sweep_crashed_gates(my_holder: str = "") -> int:
     """Lazy crash sweep (§3.3C): rows still 'running' whose holder process is
     provably dead belong to no one → paused/crashed, so a later resume CAS has

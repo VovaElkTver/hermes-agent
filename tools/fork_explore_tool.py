@@ -188,7 +188,7 @@ def _redrive_session_forks(session_id: str, cfg: dict, client: Any, model: str) 
         return 0
     try:
         from tools.fork_explore_journal import (get_checkpoints, cas_gate,
-                                                proc_stamp,
+                                                proc_stamp, settled_group,
                                                 resumed_pending_work,
                                                 sweep_crashed_gates)
         from tools.fork_explore_rollout import redrive_from_checkpoint
@@ -197,7 +197,9 @@ def _redrive_session_forks(session_id: str, cfg: dict, client: Any, model: str) 
         return 0
     sweep_crashed_gates()
     done = 0
+    touched: set[str] = set()
     for jid, ref in resumed_pending_work(session_id):
+        touched.add(jid)
         if not cas_gate(jid, ref, ("resumed_pending",), "running",
                         holder=proc_stamp()):
             continue  # another process/driver claimed this branch
@@ -217,6 +219,8 @@ def _redrive_session_forks(session_id: str, cfg: dict, client: Any, model: str) 
             logger.debug("fork re-drive %s/%s failed: %s", jid, ref, exc,
                          exc_info=True)
             cas_gate(jid, ref, ("running",), "paused", reason="redrive_failed")
+    for jid in touched:
+        settled_group(jid)
     return done
 
 
