@@ -112,6 +112,17 @@ def inter_step_gate(partial: dict, cfg: dict, facts: Optional[list[str]],
     return True, "continue"
 
 
+def redrive_from_checkpoint(client: Any, model: str, cfg: dict, deadline: float,
+                            cp: dict[str, Any], *, chat: Optional[Callable] = None,
+                            facts: Optional[list[str]] = None) -> dict[str, Any]:
+    """One lazy re-drive leg (STITCH-DESIGN-8012 §3.4): replay from the last
+    boundary checkpoint of a resumed_pending row up to depth_max under the
+    same per-branch caps. The journal row is flipped to 'running' by the
+    CALLER (CAS from resumed_pending is the driver's ownership claim)."""
+    roller = BranchRoller(client, model, cfg, deadline, facts=facts, chat=chat)
+    return roller.run([], str(cp["branch_ref"]), "", resume_cp=cp)
+
+
 class BranchRoller:
     """Одна ветка: шаг → граница (пауза) → gate/cont → шаг… до потолка depth_max.
 
@@ -141,7 +152,8 @@ class BranchRoller:
             return _chat(self.client, self.model, messages, **kw)
         return self._chat(self.client, self.model, messages, **kw)
 
-    def run(self, prefix: list[dict], ref: str, strategy: str) -> dict[str, Any]:
+    def run(self, prefix: list[dict], ref: str, strategy: str,
+            resume_cp: Optional[dict] = None) -> dict[str, Any]:
         cfg = self.cfg
         state: dict[str, Any] = {"ref": ref, "strategy_text": strategy, "steps": [],
                                  "intents": [], "reads": [], "tokens": 0,
@@ -151,9 +163,26 @@ class BranchRoller:
         tokens_cap = depth_cap * int(cfg["tokens_per_step_max"])
         messages = list(prefix) + [build_branch_suffix(ref, strategy)]
         t0 = time.monotonic()
-        self._checkpoint(state, 0)
-
         step_no = 0
+        if resume_cp is not None:
+            # Lazy re-drive (STITCH-DESIGN-8012 §3.4): continue the trajectory
+            # from its last boundary checkpoint. step_index+1 semantics come
+            # from keeping step_no at cp.step_index — the while-loop's first
+            # increment produces exactly the next step. Read-request FILE
+            # BODIES are not persisted (only the trace), so a resumed leg
+            # replays decisions/actions but re-issues reads as fresh steps.
+            steps_seed = json.loads(resume_cp.get("steps_json") or "[]")
+            state["steps"] = [dict(s) for s in steps_seed]
+            state["intents"] = [it for s in state["steps"]
+                                for it in (s.get("intents") or []) if isinstance(it, dict)]
+            state["tokens"] = int(resume_cp.get("tokens", 0))
+            step_no = int(resume_cp.get("step_index", 0))
+            for s in state["steps"]:
+                messages.append({"role": "assistant",
+                                 "content": json.dumps(s, ensure_ascii=False)})
+            messages.append({"role": "user",
+                             "content": step_instruction(step_no + 1, depth_cap)})
+        self._checkpoint(state, step_no)
         while step_no < depth_cap:
             if self.deadline - time.monotonic() <= 0:
                 state["stop_reason"] = "deadline"
