@@ -460,6 +460,9 @@ gateway:
     stopped: "⚡ 已停止。你可以繼續此工作階段。"
     no_active: "沒有可停止的作用中任務。"
     force_stopped_pending: "⚡ 已強制停止。代理當時仍在啟動 — 工作階段已解鎖。"
+  att:
+    paused: "⏸ 注意 — 在最近的安全邊界凍結。沒有丟失任何東西：輸入 continue 繼續，或 /stop 取消。"
+    none: "沒有執行中的任務可暫停 — /att 只對活躍回合生效。"
   title:
     db_unavailable: "工作階段資料庫無法使用。"
     warn_prefix: "⚠️ {error}"
@@ -1547,6 +1550,8 @@ slash:
     description: "將分享的設定檔封存檔匯入為新設定檔"
   stop:
     description: "終止所有執行中的背景程序"
+  att:
+    description: "注意：在最近的安全邊界凍結當前回合 — 然後繼續或 /stop"
   pause:
     description: "全域暫停新工作（緊急停止）；'/pause off' 恢復"
   deny:

@@ -500,6 +500,9 @@ gateway:
     stopped: "⚡ Arrêté. Vous pouvez continuer cette session."
     no_active: "Aucune tâche active à arrêter."
     force_stopped_pending: "⚡ Arrêt forcé. L'agent était encore en cours de démarrage — session déverrouillée."
+  att:
+    paused: "⏸ Attention — gel au prochain point sûr. Rien n'est perdu : écris « continue » pour reprendre, /stop pour annuler."
+    none: "Rien en cours à suspendre — /att n'agit que sur un tour vivant."
   title:
     db_unavailable: "Base de données des sessions indisponible."
     warn_prefix: "⚠️ {error}"
@@ -1799,6 +1802,8 @@ slash:
     description: "Importer une archive de profil partagée comme nouveau profil"
   stop:
     description: "Tuer tous les processus en arrière-plan en cours"
+  att:
+    description: "Attention : geler le tour en cours au prochain point sûr — puis continuer ou /stop"
   pause:
     description: "Suspendre tout nouveau travail globalement (arrêt d'urgence) ; '/pause off' reprend"
   deny:

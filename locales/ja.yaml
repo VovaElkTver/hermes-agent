@@ -460,6 +460,9 @@ gateway:
     stopped: "⚡ 停止しました。このセッションを続行できます。"
     no_active: "停止できるアクティブなタスクはありません。"
     force_stopped_pending: "⚡ 強制停止しました。エージェントはまだ起動中でした — セッションのロックを解除しました。"
+  att:
+    paused: "⏸ 注意 — 次の安全な境界で凍結します。何も失われていません：続行なら continue、中止なら /stop を入力。"
+    none: "停止中の実行がないため一時停止できません — /att は実行中のターンにのみ作用します。"
   title:
     db_unavailable: "セッションデータベースは利用できません。"
     warn_prefix: "⚠️ {error}"
@@ -1547,6 +1550,8 @@ slash:
     description: "共有されたプロファイルアーカイブを新しいプロファイルとしてインポート"
   stop:
     description: "実行中のバックグラウンドプロセスをすべて終了"
+  att:
+    description: "注意：次の安全な境界で実行中のターンを凍結 — その後 continue または /stop"
   pause:
     description: "新しい作業を全体的に一時停止（緊急停止）。'/pause off' で再開"
   deny:

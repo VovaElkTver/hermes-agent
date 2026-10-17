@@ -460,6 +460,9 @@ gateway:
     stopped: "⚡ 중지되었습니다. 이 세션을 계속할 수 있습니다."
     no_active: "중지할 활성 작업이 없습니다."
     force_stopped_pending: "⚡ 강제 중지했어요. 에이전트가 아직 시작 중이었어요 — 세션 잠금을 해제했어요."
+  att:
+    paused: "⏸ 주의 — 다음 안전 지점에서 정지합니다. 잃은 것 없음: 계속하려면 continue, 취소하려면 /stop."
+    none: "일시 정지할 실행이 없습니다 — /att는 진행 중인 턴에만 작동합니다."
   title:
     db_unavailable: "세션 데이터베이스를 사용할 수 없습니다."
     warn_prefix: "⚠️ {error}"
@@ -1547,6 +1550,8 @@ slash:
     description: "공유된 프로필 아카이브를 새 프로필로 가져오기"
   stop:
     description: "실행 중인 모든 백그라운드 프로세스 종료"
+  att:
+    description: "주의: 다음 안전 지점에서 진행 중인 턴 동결 — 이후 continue 또는 /stop"
   pause:
     description: "새 작업을 전체 일시 중지 (긴급 정지); '/pause off'로 재개"
   deny:

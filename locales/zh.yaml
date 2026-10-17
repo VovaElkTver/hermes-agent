@@ -460,6 +460,9 @@ gateway:
     stopped: "⚡ 已停止。你可以继续此会话。"
     no_active: "没有可停止的活跃任务。"
     force_stopped_pending: "⚡ 已强制停止。代理仍在启动中——会话已解锁。"
+  att:
+    paused: "⏸ 注意 — 在最近的安全边界冻结。没有丢失任何东西：输入 continue 继续，或 /stop 取消。"
+    none: "没有正在运行的任务可暂停 — /att 只对活跃回合生效。"
   title:
     db_unavailable: "会话数据库不可用。"
     warn_prefix: "⚠️ {error}"
@@ -1547,6 +1550,8 @@ slash:
     description: "将分享的配置档归档导入为新配置档"
   stop:
     description: "终止所有正在运行的后台进程"
+  att:
+    description: "注意：在最近的安全边界冻结当前回合 — 然后继续或 /stop"
   pause:
     description: "全局暂停新工作（紧急停止）；'/pause off' 恢复"
   deny:

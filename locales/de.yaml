@@ -460,6 +460,9 @@ gateway:
     stopped: "⚡ Gestoppt. Sie können diese Sitzung fortsetzen."
     no_active: "Keine aktive Aufgabe zum Stoppen."
     force_stopped_pending: "⚡ Erzwungen gestoppt. Der Agent war noch am Starten — Sitzung entsperrt."
+  att:
+    paused: "⏸ Achtung — Einfrieren an der nächsten sicheren Grenze. Nichts verloren: »continue« zum Fortsetzen, /stop zum Abbrechen."
+    none: "Nichts anzhalten — /att wirkt nur auf einen laufenden Turn."
   title:
     db_unavailable: "Sitzungsdatenbank nicht verfügbar."
     warn_prefix: "⚠️ {error}"
@@ -1547,6 +1550,8 @@ slash:
     description: "Ein geteiltes Profilarchiv als neues Profil importieren"
   stop:
     description: "Alle laufenden Hintergrundprozesse beenden"
+  att:
+    description: "Achtung: laufenden Turn an der nächsten sicheren Grenze einfrieren — dann fortsetzen oder /stop"
   pause:
     description: "Neue Arbeit global pausieren (Notstopp); '/pause off' setzt fort"
   deny:

@@ -460,6 +460,9 @@ gateway:
     stopped: "⚡ Fermato. Puoi continuare questa sessione."
     no_active: "Nessuna attività attiva da fermare."
     force_stopped_pending: "⚡ Interruzione forzata. L'agente si stava ancora avviando — sessione sbloccata."
+  att:
+    paused: "⏸ Attenzione — mi congelo al prossimo punto sicuro. Nulla è perso: scrivi «continue» per riprendere, /stop per annullare."
+    none: "Niente in esecuzione da fermare — /att agisce solo su un turno attivo."
   title:
     db_unavailable: "Database delle sessioni non disponibile."
     warn_prefix: "⚠️ {error}"
@@ -1547,6 +1550,8 @@ slash:
     description: "Importa un archivio di profilo condiviso come nuovo profilo"
   stop:
     description: "Termina tutti i processi in background in esecuzione"
+  att:
+    description: "Attenzione: congela il turno attivo al prossimo punto sicuro — poi continua o /stop"
   pause:
     description: "Metti in pausa globalmente il nuovo lavoro (arresto di emergenza); '/pause off' riprende"
   deny:
