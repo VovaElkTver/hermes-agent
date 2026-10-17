@@ -151,7 +151,11 @@ def interrupt_session_verb(runner: Any) -> Callable[..., dict[str, Any]]:
 
         from agent.interrupt_control import interrupt_issuer  # late import: safe, no cycle
 
-        reason = _slug_reason(params.get("reason"))
+        # Default tool_reason names the sender when one is attributed (the wire path
+        # always is); unattributed in-process callers keep the legacy default.
+        _origin = str(params.get("origin") or "").strip()
+        reason = _slug_reason(params.get("reason")
+                              or (f"preempted_by_{_origin.replace(':', '_')}" if _origin else ""))
         message = str(params.get("message") or "").strip() or None
         hard = bool(params.get("hard"))
         handoff = _handoff_note(agent, reason)
@@ -171,12 +175,13 @@ def interrupt_session_verb(runner: Any) -> Callable[..., dict[str, Any]]:
 
         issuer = interrupt_issuer(agent)
         logger.info(
-            "control: interrupt-session key=%s ok=%s issuer=%s hard=%s (out-of-band preempt)",
-            key, ok, issuer, hard,
+            "control: interrupt-session key=%s ok=%s issuer=%s hard=%s origin=%s (out-of-band preempt)",
+            key, ok, issuer, hard, params.get("origin"),
         )
         return {
             "interrupted": ok,
             "session": key,
+            "origin": params.get("origin"),
             "tool_reason": reason,
             "issuer": issuer,
             "hard": hard,
@@ -209,6 +214,11 @@ def steer_session_verb(runner: Any) -> Callable[..., dict[str, Any]]:
             return {"accepted": False, "session": key, "reason": "no-running-turn"}
         if not text:
             return {"accepted": False, "session": key, "error": "empty 'message'"}
+        # Machine-sent steer carries a visible origin label into the same pending-steer
+        # inbox humans use (PR-A canon: one inbox, attributed senders).
+        origin = str(params.get("origin") or "").strip()
+        if origin and not text.startswith(f"[from {origin}"):
+            text = f"[from {origin}] {text}"
 
         accepted = False
         children: list[Any] = []
@@ -229,9 +239,10 @@ def steer_session_verb(runner: Any) -> Callable[..., dict[str, Any]]:
                 logger.debug("session-verbs: child steer failed", exc_info=True)
 
         logger.info(
-            "control: steer-session key=%s accepted=%s children=%d (out-of-band steer)",
-            key, accepted, len(children),
+            "control: steer-session key=%s accepted=%s children=%d origin=%s (out-of-band steer)",
+            key, accepted, len(children), params.get("origin"),
         )
-        return {"accepted": accepted, "session": key, "children": len(children)}
+        return {"accepted": accepted, "session": key, "children": len(children),
+                "origin": origin or None}
 
     return handler

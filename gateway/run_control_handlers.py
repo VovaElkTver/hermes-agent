@@ -71,3 +71,26 @@ def rescan_profiles_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callab
             return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
     return _rescan_profiles_handler
+
+
+def preempt_verb_handlers(runner: Any) -> tuple[dict[str, Callable[..., dict]], frozenset[str]]:
+    """The preempt half of the verb registry: ``(handlers, origin_required_verbs)``.
+
+    Out-of-band session control + the fork-explore gate verbs share one rule: every
+    request carries sender attribution at the wire ROOT (validated by
+    ``GatewayControlServer`` before dispatch). Kept as a helper so the registration in
+    ``run.py`` is two lines and the socket tests build the exact production shape.
+    """
+    from gateway.run_session_verbs import interrupt_session_verb, steer_session_verb
+    from gateway.fork_control_verbs import fork_control_verbs
+
+    handlers = {
+        # interrupt()/steer() are lock-guarded and cross-thread by design — safe off-loop.
+        "interrupt-session": interrupt_session_verb(runner),
+        "steer-session": steer_session_verb(runner),
+        # fork.pause/resume/close ride the fork_gate CAS hub (PR#42 API layer), no runner needed.
+        **fork_control_verbs(),
+    }
+    origin_required = frozenset(
+        {"interrupt-session", "steer-session", "fork.pause", "fork.resume", "fork.close"})
+    return handlers, origin_required

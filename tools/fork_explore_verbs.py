@@ -46,7 +46,7 @@ def _known_branch(join_id: str) -> bool:
         return False
     with sqlite3.connect(journal_path(), timeout=2.0) as db:
         found = db.execute(
-            "SELECT (SELECT 1 FROM fork_run WHERE join_id=?)"
+            "SELECT COALESCE((SELECT 1 FROM fork_run WHERE join_id=?),0)"
             " + COALESCE((SELECT 1 FROM fork_gate WHERE join_id=? LIMIT 1),0)",
             (join_id, join_id)).fetchone()[0]
     return bool(found)

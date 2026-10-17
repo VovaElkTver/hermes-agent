@@ -16,6 +16,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import tempfile
@@ -125,7 +126,15 @@ class GatewayControlServer:
     because its control socket couldn't bind; consumers fall back to the scan layer."""
 
     def __init__(self, home: Optional[Path] = None, *,
-                 verb_handlers: Optional[dict[str, Callable[..., dict[str, Any]]]] = None) -> None:
+                 verb_handlers: Optional[dict[str, Callable[..., dict[str, Any]]]] = None,
+                 origin_required_verbs: frozenset[str] = frozenset()) -> None:
+        # Preempt verbs (PR-A) require sender attribution on EVERY request, at the wire
+        # root: ``{"id", "verb", "origin", "params"}`` with origin in
+        # {cli, human:<platform>, agent:<name>}. Empty/missing/foreign-shaped origins are
+        # a transport-level validation error — there is no default. The validated value is
+        # injected into the handler's ``params`` (the only channel handlers see). Verbs not
+        # in the required set keep the historical no-origin wire format.
+        self._origin_required = frozenset(origin_required_verbs)
         if home is None:
             from gateway.status import _get_process_hermes_home
             home = _get_process_hermes_home()
@@ -213,10 +222,26 @@ class GatewayControlServer:
             else:
                 # Verbs that carry arguments (e.g. migrate-profile-identity) declare a ``params``
                 # parameter; argument-less verbs (identify/status/rescan) keep their bare signature.
-                params = request.get("params") if isinstance(request.get("params"), dict) else {}
-                wants_params = "params" in inspect.signature(handler).parameters
-                response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
-                            "result": handler(params) if wants_params else handler()}
+                raw_params = request.get("params")
+                params: dict[str, Any] = dict(raw_params) if isinstance(raw_params, dict) else {}
+                origin = str(request.get("origin") or "").strip() if verb in self._origin_required else ""
+                if verb in self._origin_required and not origin:
+                    response = {
+                        "ok": False,
+                        "error": (f"missing_origin: {verb!r} requires a non-empty origin at the "
+                                  f"request root (cli | human:<platform> | agent:<name>)"),
+                        "protocol": CONTROL_PROTOCOL_VERSION}
+                elif verb in self._origin_required and not _ORIGIN_SHAPE.fullmatch(origin):
+                    response = {"ok": False, "error": f"unknown_origin: {origin}",
+                                "protocol": CONTROL_PROTOCOL_VERSION}
+                else:
+                    # The validated wire-root origin is the attribution record; handlers read it
+                    # from params so their signature stays ``handler(params)``.
+                    if origin:
+                        params = {**dict(params), "origin": origin}
+                    wants_params = "params" in inspect.signature(handler).parameters
+                    response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
+                                "result": handler(params) if wants_params else handler()}
         except Exception as exc:
             response = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "protocol": CONTROL_PROTOCOL_VERSION}
         if request_id is not None:
@@ -270,12 +295,21 @@ class _PipeControlProtocol(asyncio.Protocol):
                 self._transport.close()
 
 
+_ORIGIN_SHAPE = re.compile(r"(?:cli|human:[A-Za-z0-9._-]+|agent:[A-Za-z0-9._-]+)")
+
+
 def query_gateway_control(home: Path, verb: str, *, params: Optional[dict[str, Any]] = None,
+                          origin: Optional[str] = None,
                           timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` a control verb; returns its ``result`` payload. Any failure (no/stale
     socket, timeout, malformed answer, ``ok: false``) returns None so callers fall back to the scan layer.
-    ``params`` carries verb arguments (e.g. ``{"old": ..., "new": ...}``). Never raises."""
+    ``params`` carries verb arguments (e.g. ``{"old": ..., "new": ...}``). ``origin`` is the
+    PREEMPT-ONLY sender attribution sent at the request ROOT (never in params): the socket enforces
+    non-empty + well-shaped for preempt verbs (PR-A); other verbs' wire format stays unchanged.
+    Never raises."""
     payload: dict[str, Any] = {"verb": verb, "id": 1, "protocol": CONTROL_PROTOCOL_VERSION}
+    if origin:
+        payload["origin"] = origin
     if params:
         payload["params"] = params
     request = json.dumps(payload).encode("utf-8") + b"\n"

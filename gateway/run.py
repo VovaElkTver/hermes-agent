@@ -5555,9 +5555,10 @@ async def _start_gateway_start_control_socket(runner):
             unserve_profile_verb, serve_profile_verb,
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
-        from gateway.run_session_verbs import interrupt_session_verb, steer_session_verb
-        from gateway.run_control_handlers import pause_for_update_verb, rescan_profiles_verb
+        from gateway.run_control_handlers import (
+            pause_for_update_verb, rescan_profiles_verb, preempt_verb_handlers)
         _main_loop = asyncio.get_running_loop()
+        _preempt_handlers, _preempt_origin_required = preempt_verb_handlers(runner)
 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": pause_for_update_verb(runner, _main_loop),
@@ -5569,11 +5570,9 @@ async def _start_gateway_start_control_socket(runner):
                            # A plugin installed/enabled by another process loads now and re-wires the
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop),
-                           # Out-of-band preemption (PR-A): a scheduler/ctl process stops or redirects a
-                           # live session's turn without a chat platform. Both are safe off-loop:
-                           # interrupt()/steer() are lock-guarded, cross-thread by design.
-                           "interrupt-session": interrupt_session_verb(runner),
-                           "steer-session": steer_session_verb(runner)})
+                           # Out-of-band preemption (PR-A) + fork gate verbs, all origin-attributed.
+                           **_preempt_handlers},
+            origin_required_verbs=_preempt_origin_required)
         if not await _control_server.start():
             _control_server = None
         else:
