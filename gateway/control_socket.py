@@ -407,3 +407,30 @@ def reload_gateway_plugins(home: Path, *, profile_home: Optional[Path] = None,
     session; only handlers go live."""
     params = {"home": str(profile_home or home)}
     return query_gateway_control(home, "reload-plugins", params=params, timeout=timeout)
+
+
+def interrupt_gateway_session(home: Path, session: str, *, reason: str = "controller_preemption",
+                              message: str | None = None, hard: bool = False,
+                              timeout: float = 5.0) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to preempt the running turn of ``session`` (a session key or a
+    unique substring of one). ``reason`` is a TRUSTED SYSTEM CATEGORY (slug, default
+    ``controller_preemption``), never free text and never a user stop: the turn's tool-cancellation
+    attribution carries it (``interrupt_issuer``), so the UI/turn record says "scheduler preempted",
+    not "user interrupted" (#112647 pattern). Returns ``{"interrupted", "session", "tool_reason",
+    "issuer", "handoff", "activity"}`` — the handoff line describes what the turn was doing / which
+    tool it stopped on for a cheap resume — or None when no gateway answers / it predates the verb
+    (caller falls back to legacy stop paths)."""
+    params: dict[str, Any] = {"session": session, "reason": reason, "hard": hard}
+    if message:
+        params["message"] = message
+    return query_gateway_control(home, "interrupt-session", params=params, timeout=timeout)
+
+
+def steer_gateway_session(home: Path, session: str, message: str,
+                          *, timeout: float = 5.0) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to queue ``message`` as a mid-turn steer for ``session``'s
+    live turn (delivered after the current tool batch; no abort). Returns ``{"accepted", "session",
+    "children"}`` — ``accepted: false`` with ``reason: "no-running-turn"`` when nothing runs, so the
+    scheduler queues its own follow-up — or None when no gateway answers / it predates the verb."""
+    return query_gateway_control(home, "steer-session",
+                                 params={"session": session, "message": message}, timeout=timeout)
