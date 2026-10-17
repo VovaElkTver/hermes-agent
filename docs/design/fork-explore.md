@@ -166,12 +166,41 @@ Gates против фактов — позиционная эвристика: �
 пределах ±2 токенов от опорных слов факта (эхо факта с далёким «без/не» — не
 конфликт; ложноположительный случай найден live-догодом и закрыт тестом).
 
-Unit: 43/43 зелёные (`scripts/run_tests.sh tests/tools/test_fork_explore.py`).
-Live (`FORK_DOGFOOD_LIVE=1 test_fork_explore_live.py`): роллауты и судья
-проходят целиком, select c margin подтверждён; наблюдалась модель-индуцированная
-аномалия packet (внутренний select-JSON, эхо в summary при внешнем reject) —
-контрактный тест её поймал; разбор отложен до следующего шага.
+Unit: 44/44 зелёные (`scripts/run_tests.sh tests/tools/test_fork_explore.py`
++ live `FORK_DOGFOOD_LIVE=1 test_fork_explore_live.py` — select B, margin 0.685,
+packet <=1500, журнал read-back, 17.10).
+
+Калибровка k/deadline на :8012 (`scripts/fork_k_deadline_calibration.py`,
+данные: ~/.hermes/forks/calibration-2026-10-17.json):
+- шаг ветки (общий префикс ~4k токенов, json_object, thinking off, temp 0.7):
+  p95 = 2.1s (k=1), 4.0s (k=4), 14.1s (k=8) — клифф x3.6 на k=8;
+- матч слепого судьи (mt=4000): p95 ~1.0s;
+- строгий JSON branch-промпта: schema_ok 16/16 (все ширины) — открытая работа
+  verify-шага ЗАКРЫТА: промпт + disable_thinking + bad_json_retry дают 100%;
+- вывод: k_max=4 остаётся (линейная деградация кончается до k=5);
+  fork_deadline_s=90 покрывает worst-case (depth*p95@k + 4*judge + margin ≈ 47s)
+  с двойным запасом; k>4 — только после серверного cache-fork.
+
+Отмена веток: `scripts/fork_cancel_loadtest.py --k 8` PASS (17.10): 8 reqs
+заняли батч за 1.0s, слоты освобождены до keep-count за 526 мс (SLA 15с),
+очередь дренирована, 4/4 kept-стрима чистые — ранняя остановка ветки безопасна.
+
+Пакетный контракт (dogfood :8012): hard-trim JoinPacket переиначивал живой
+select в reject (битая сборка `}}` + hardcode fallback) — исправлено
+детерминированным last-resort (`_minimal_packet`): вердикт/победитель/
+journal_ref/кластеры переживают обрезку, `_truncated`+`_note` видны;
+контрактный тест `test_hard_trim_never_overturns_a_select_into_reject`.
+
+`shadow_only: true` — реализован отдельным дефолтом (не `enabled`): run
+пишется в журнал со status='shadow', provenance пакета несёт флаг,
+`shadow_stats().runs_shadow`; боёвка — flip флота по данным журнала.
+`depth` — параметр инструмента: потолок <= depth_max, не семантика
+(`resolve_rollout_depth`, зажим и string-формы; тесты).
+
 Боёвка не включена: ждём калибровку по shadow-журналу (SPEC 7.4/13.4).
+Известный flake в PR-2 территории (рейд-тест): `test_bad_json_retry_once_
+recovers_truncated_step` упал 1 раз в 24-worker прогоне, 3/3 зелёный isolated —
+разбирает владелец пошаговой паузы (fork_explore_rollout.py).
 
 ### Что закрыто этим шагом (17.10, вечер)
 
