@@ -2722,44 +2722,21 @@ DEFAULT_CONFIG = {
 }
 
 
-def _env(description, prompt, **keys):
-    """One OPTIONAL_ENV_VARS entry; keyword order is preserved as dict key order."""
-    return {"description": description, "prompt": prompt, **keys}
+from hermes_cli.config_env_entries import (
+    base_url_entry, category_factory, env_entry as _env_impl)
 
 
-_OMIT = object()
-
-
-def _category(category, password, advanced):
-    """Entry factory for one category with its usual password/advanced defaults.
-
-    ``url``/``help``/``tools`` are only written when passed; ``password=None`` omits the key;
-    ``advanced`` is only written when true. Key order matches the plain ``_env`` entries.
-    """
-    def make(description, prompt, url=_OMIT, *, help=_OMIT, tools=_OMIT, password=password,
-             advanced=advanced):
-        d = {"description": description, "prompt": prompt}
-        d.update((k, v) for k, v in (("help", help), ("url", url), ("tools", tools)) if v is not _OMIT)
-        if password is not None:
-            d["password"] = password
-        d["category"] = category
-        if advanced:
-            d["advanced"] = True
-        return d
-    return make
-
-
-_prov = _category("provider", password=True, advanced=True)
-_tool = _category("tool", password=True, advanced=False)
-_msg = _category("messaging", password=False, advanced=False)
-_skill = _category("skill", password=True, advanced=True)
-_setting = _category("setting", password=False, advanced=False)
+_env = _env_impl
+_prov = category_factory("provider", password=True, advanced=True)
+_tool = category_factory("tool", password=True, advanced=False)
+_msg = category_factory("messaging", password=False, advanced=False)
+_skill = category_factory("skill", password=True, advanced=True)
+_setting = category_factory("setting", password=False, advanced=False)
 
 
 def _base_url(name, prompt_name=None):
     """Provider ``*_BASE_URL`` override entry (advanced, not a secret)."""
-    prompt = f"{prompt_name or name} base URL (leave empty for default)"
-    return _prov(f"{name} base URL override", prompt, None, password=False)
+    return base_url_entry(_prov, name, prompt_name)
 
 
 # Optional environment variables that enhance functionality. Feeds the dashboard keys page and setup
@@ -3201,3 +3178,10 @@ OPTIONAL_ENV_VARS = {
         "Ephemeral system prompt injected at API-call time (never persisted to sessions)",
         "Ephemeral system prompt", None),
 }
+
+
+# Fork-explore defaults live in a sibling (config_defaults size ratchet); merged here
+# so DEFAULT_CONFIG / OPTIONAL_ENV_VARS stay the single registry every reader already uses.
+from hermes_cli.fork_defaults import DEFAULT_FORK_EXPLORE, OPTIONAL_FORK_ENV_VARS
+DEFAULT_CONFIG["fork_explore"] = DEFAULT_FORK_EXPLORE
+OPTIONAL_ENV_VARS.update(OPTIONAL_FORK_ENV_VARS)
