@@ -15,12 +15,16 @@ review_fn: supervisor judge, but FAIL CLOSED (judge.review fails open for the
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import signal
+import sqlite3
 import subprocess
 import tempfile
 import time
+
+logger = logging.getLogger(__name__)
 
 # Windows-only spawn flags (subprocess exposes them on nt only).
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -68,7 +72,9 @@ def _preempt_signal(conn, *, run_id: str, step_id: str | None) -> bool:
             "SELECT (SELECT run_status FROM ctl_run WHERE run_id=?) rs,"
             " (SELECT status FROM ctl_step WHERE step_id=?) ss",
             (run_id, step_id or "")).fetchone()
-    except Exception:
+    except sqlite3.Error:
+        logger.debug("preempt signal read failed (fail-open, retried next poll)",
+                     exc_info=True)
         return False
     return bool(row and (row["rs"] == "interrupt_requested"
                          or (step_id and row["ss"] == "paused")))

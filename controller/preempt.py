@@ -22,7 +22,11 @@ worker's own exit status never overwrites this truth (loop trusts the read-back)
 """
 from __future__ import annotations
 
+import logging
+
 from . import model
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_PREEMPT_REASON = "controller_preemption"
 
@@ -49,7 +53,10 @@ def request_preempt(conn, task_id: str, *, reason: str = DEFAULT_PREEMPT_REASON,
             gateway_result = interrupt_gateway_session(
                 home, session, reason=reason,
                 message=note if handoff else None)
-        except Exception:
+        except Exception:  # deliberate boundary — any client/import failure means
+            # "no live path"; the durable flag below still delivers the preempt.
+            logger.debug("interrupt-session verb unavailable; falling back to "
+                         "durable flag", exc_info=True)
             gateway_result = None
         if gateway_result is not None:
             via = "control_socket"
