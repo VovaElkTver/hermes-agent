@@ -28,6 +28,7 @@ from tools.fork_explore_journal import (
     ensure_gate_rows,
     get_gate,
     holder_alive,
+    _connect,
     journal_path,
 )
 
@@ -44,7 +45,7 @@ def _known_branch(join_id: str) -> bool:
     """join_id exists if a run row OR any gate row exists."""
     if not journal_path().exists():
         return False
-    with sqlite3.connect(journal_path(), timeout=2.0) as db:
+    with _connect(journal_path()) as db:
         found = db.execute(
             "SELECT COALESCE((SELECT 1 FROM fork_run WHERE join_id=?),0)"
             " + COALESCE((SELECT 1 FROM fork_gate WHERE join_id=? LIMIT 1),0)",
@@ -53,7 +54,7 @@ def _known_branch(join_id: str) -> bool:
 
 
 def _gate_rows(join_id: str) -> list[dict[str, Any]]:
-    with sqlite3.connect(journal_path(), timeout=2.0) as db:
+    with _connect(journal_path()) as db:
         db.row_factory = sqlite3.Row
         return [dict(r) for r in db.execute(
             "SELECT * FROM fork_gate WHERE join_id=?", (join_id,)).fetchall()]
@@ -118,7 +119,7 @@ def pause_branch(join_id: str, ref: str = "", variant: str = "soft") -> dict[str
         # fork, group row included — exactly the k-in-one-statement property
         # the group row exists for (§5)
         marked = 0
-        with sqlite3.connect(journal_path(), timeout=2.0) as db:
+        with _connect(journal_path()) as db:
             cur = db.execute(
                 "UPDATE fork_gate SET state='paused', reason='human',"
                 " updated_at=? WHERE join_id=?"
