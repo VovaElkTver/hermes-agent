@@ -55,8 +55,55 @@ def _kill_tree(proc) -> None:
         pass
 
 
+def _preempt_signal(conn, *, run_id: str, step_id: str | None) -> bool:
+    """True when an out-of-band preempt landed on this run/step since dispatch:
+    the scheduler either flagged the run row ``interrupt_requested`` (the durable
+    fallback path — used when the gateway control socket has no session verbs, old
+    gateway, or the worker is a subprocess with no socket at all), or flipped the
+    claimed step ``in_progress -> paused`` via the CAS pause (PR-A model). Either is
+    a command to cut the worker short WITHOUT finishing the turn. DB hiccups fail
+    open (keep the worker running) — a missed poll is retried next interval."""
+    try:
+        row = conn.execute(
+            "SELECT (SELECT run_status FROM ctl_run WHERE run_id=?) rs,"
+            " (SELECT status FROM ctl_step WHERE step_id=?) ss",
+            (run_id, step_id or "")).fetchone()
+    except Exception:
+        return False
+    return bool(row and (row["rs"] == "interrupt_requested"
+                         or (step_id and row["ss"] == "paused")))
+
+
+def _await_worker(proc, *, conn, run_id: str, step_id: str | None,
+                  timeout_s: int, poll_s: float, grace_s: float = 60.0):
+    """Bounded wait for the worker with out-of-band preempt polling.
+
+    Returns ``(stdout, stderr, preempted)``. Repeated ``communicate()`` calls are
+    safe since bpo-39531: partial pipe data is kept in the Popen buffers between
+    calls, so the final call still returns everything the worker printed. Raises
+    ``subprocess.TimeoutExpired`` when the hard budget (timeout_s + grace) is
+    spent with no preempt — the caller keeps its legacy tree-kill/failed path."""
+    deadline = time.monotonic() + timeout_s + grace_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(getattr(proc, "args", ""),
+                                            timeout_s + grace_s)
+        try:
+            out, err = proc.communicate(timeout=min(poll_s, remaining))
+            return out, err, False
+        except subprocess.TimeoutExpired:
+            if _preempt_signal(conn, run_id=run_id, step_id=step_id):
+                _kill_tree(proc)
+                # After the kill every pipe reaches EOF; this collects the buffered
+                # partial output too (see bpo-39531 note above).
+                out, err = proc.communicate()
+                return out, err, True
+
+
 def make_worker(conn, *, timeout_s: int = 1800,
-                hermes_bin: str | None = None, extra_env: dict | None = None):
+                hermes_bin: str | None = None, extra_env: dict | None = None,
+                preempt_poll_s: float = 2.0, grace_s: float = 60.0):
     # Resolve the OS branch once at binding time: the host OS cannot change
     # mid-run, and the tests that fake os.name='nt' must not have it leak into
     # stdlib internals (tempfile checks os.name too).
@@ -84,7 +131,16 @@ def make_worker(conn, *, timeout_s: int = 1800,
                 text=True, encoding="utf-8", errors="replace", env=env,
                 **spawn_kwargs)
             try:
-                out, err = proc.communicate(timeout=timeout_s + 60)
+                # Bounded wait with preempt polling: communicate() may be re-entered on
+                # timeout (CPython keeps partial pipe data in internal buffers and the
+                # final call returns everything collected). Each poll costs one indexed
+                # read of the run/step rows; the worker is cut short the moment an
+                # out-of-band preempt lands, WITHOUT letting the turn finish (acceptance:
+                # the pump removes the in_progress step mid-flight).
+                out, err, preempted = _await_worker(
+                    proc, conn=conn, run_id=run["run_id"],
+                    step_id=step.get("step_id"), timeout_s=timeout_s,
+                    poll_s=preempt_poll_s, grace_s=grace_s)
                 returncode = proc.returncode
             except subprocess.TimeoutExpired:
                 # direct child + every tool grandchild share this detached group:
@@ -93,6 +149,16 @@ def make_worker(conn, *, timeout_s: int = 1800,
                 _kill_tree(proc)
                 proc.communicate()
                 return {"status": "failed", "artifacts": [], "error": "worker timeout"}
+            if preempted:
+                from controller import model
+                handoff = ""
+                if step.get("step_id"):
+                    handoff = model.paused_handoff_note(conn, step["step_id"])
+                return {"status": "interrupted",
+                        "artifacts": [{"stdout_tail": (out or "")[-2000:],
+                                       "returncode": returncode}],
+                        "handoff": handoff or "preempted out-of-band (no note stored)",
+                        "detail": (err or "")[-500:]}
             artifacts = [{"stdout_tail": (out or "")[-2000:],
                           "returncode": returncode}]
             status = "finished" if returncode == 0 else "failed"
@@ -120,6 +186,19 @@ def _brief(conn, task, step) -> str:
         "Work ONLY on this step. When done, state exactly how each acceptance",
         "criterion is verified (command output). This run is checkpointed.",
     ]
+    # Cheap resume (acceptance #4): a step that was preempted re-dispatches with the
+    # handoff line the preempter stored ("чем занимался, на какой тулзе встал").
+    # The contract fields above are re-read NOW, so a contract edit that landed during
+    # the pause re-anchors the resumed run instead of replaying stale context.
+    note = str(step.get("handoff") or "").strip()
+    if note:
+        lines += [
+            "",
+            "## RESUME — this step was preempted mid-turn before",
+            f"Handoff from the interrupted run: {note}",
+            "Do NOT redo finished work: continue from the handoff point, and",
+            "re-anchor first on the CURRENT acceptance criteria/facts above.",
+        ]
     return "\n".join(lines)
 
 

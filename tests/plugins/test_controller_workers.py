@@ -293,7 +293,9 @@ def test_worker_timeout_path_routes_through_kill_tree(env, monkeypatch):
     monkeypatch.setattr(workers.subprocess, "Popen", lambda *a, **k: FakeProc())
     c, wd, fake = env
     tid, st = _task(c, wd)
-    res = workers.make_worker(c, hermes_bin=fake, timeout_s=1)(
+    # grace_s=0: the fake communicate never blocks, so the hard budget is exactly
+    # timeout_s (production default keeps the legacy timeout_s+60 grace).
+    res = workers.make_worker(c, hermes_bin=fake, timeout_s=1, grace_s=0)(
         {"run_id": "r"}, {"task_id": tid, "workdir": wd, "goal": "X"},
         {"step_id": st, "kind": "impl", "title": "x"})
     assert res["status"] == "failed" and res["error"] == "worker timeout"
