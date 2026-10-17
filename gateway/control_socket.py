@@ -16,6 +16,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import tempfile
@@ -125,7 +126,15 @@ class GatewayControlServer:
     because its control socket couldn't bind; consumers fall back to the scan layer."""
 
     def __init__(self, home: Optional[Path] = None, *,
-                 verb_handlers: Optional[dict[str, Callable[..., dict[str, Any]]]] = None) -> None:
+                 verb_handlers: Optional[dict[str, Callable[..., dict[str, Any]]]] = None,
+                 origin_required_verbs: frozenset[str] = frozenset()) -> None:
+        # Preempt verbs (PR-A) require sender attribution on EVERY request, at the wire
+        # root: ``{"id", "verb", "origin", "params"}`` with origin in
+        # {cli, human:<platform>, agent:<name>}. Empty/missing/foreign-shaped origins are
+        # a transport-level validation error — there is no default. The validated value is
+        # injected into the handler's ``params`` (the only channel handlers see). Verbs not
+        # in the required set keep the historical no-origin wire format.
+        self._origin_required = frozenset(origin_required_verbs)
         if home is None:
             from gateway.status import _get_process_hermes_home
             home = _get_process_hermes_home()
@@ -213,10 +222,26 @@ class GatewayControlServer:
             else:
                 # Verbs that carry arguments (e.g. migrate-profile-identity) declare a ``params``
                 # parameter; argument-less verbs (identify/status/rescan) keep their bare signature.
-                params = request.get("params") if isinstance(request.get("params"), dict) else {}
-                wants_params = "params" in inspect.signature(handler).parameters
-                response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
-                            "result": handler(params) if wants_params else handler()}
+                raw_params = request.get("params")
+                params: dict[str, Any] = dict(raw_params) if isinstance(raw_params, dict) else {}
+                origin = str(request.get("origin") or "").strip() if verb in self._origin_required else ""
+                if verb in self._origin_required and not origin:
+                    response = {
+                        "ok": False,
+                        "error": (f"missing_origin: {verb!r} requires a non-empty origin at the "
+                                  f"request root (cli | human:<platform> | agent:<name>)"),
+                        "protocol": CONTROL_PROTOCOL_VERSION}
+                elif verb in self._origin_required and not _ORIGIN_SHAPE.fullmatch(origin):
+                    response = {"ok": False, "error": f"unknown_origin: {origin}",
+                                "protocol": CONTROL_PROTOCOL_VERSION}
+                else:
+                    # The validated wire-root origin is the attribution record; handlers read it
+                    # from params so their signature stays ``handler(params)``.
+                    if origin:
+                        params = {**dict(params), "origin": origin}
+                    wants_params = "params" in inspect.signature(handler).parameters
+                    response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
+                                "result": handler(params) if wants_params else handler()}
         except Exception as exc:
             response = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "protocol": CONTROL_PROTOCOL_VERSION}
         if request_id is not None:
@@ -270,12 +295,21 @@ class _PipeControlProtocol(asyncio.Protocol):
                 self._transport.close()
 
 
+_ORIGIN_SHAPE = re.compile(r"(?:cli|human:[A-Za-z0-9._-]+|agent:[A-Za-z0-9._-]+)")
+
+
 def query_gateway_control(home: Path, verb: str, *, params: Optional[dict[str, Any]] = None,
+                          origin: Optional[str] = None,
                           timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` a control verb; returns its ``result`` payload. Any failure (no/stale
     socket, timeout, malformed answer, ``ok: false``) returns None so callers fall back to the scan layer.
-    ``params`` carries verb arguments (e.g. ``{"old": ..., "new": ...}``). Never raises."""
+    ``params`` carries verb arguments (e.g. ``{"old": ..., "new": ...}``). ``origin`` is the
+    PREEMPT-ONLY sender attribution sent at the request ROOT (never in params): the socket enforces
+    non-empty + well-shaped for preempt verbs (PR-A); other verbs' wire format stays unchanged.
+    Never raises."""
     payload: dict[str, Any] = {"verb": verb, "id": 1, "protocol": CONTROL_PROTOCOL_VERSION}
+    if origin:
+        payload["origin"] = origin
     if params:
         payload["params"] = params
     request = json.dumps(payload).encode("utf-8") + b"\n"
@@ -407,3 +441,30 @@ def reload_gateway_plugins(home: Path, *, profile_home: Optional[Path] = None,
     session; only handlers go live."""
     params = {"home": str(profile_home or home)}
     return query_gateway_control(home, "reload-plugins", params=params, timeout=timeout)
+
+
+def interrupt_gateway_session(home: Path, session: str, *, reason: str = "controller_preemption",
+                              message: str | None = None, hard: bool = False,
+                              timeout: float = 5.0) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to preempt the running turn of ``session`` (a session key or a
+    unique substring of one). ``reason`` is a TRUSTED SYSTEM CATEGORY (slug, default
+    ``controller_preemption``), never free text and never a user stop: the turn's tool-cancellation
+    attribution carries it (``interrupt_issuer``), so the UI/turn record says "scheduler preempted",
+    not "user interrupted" (#112647 pattern). Returns ``{"interrupted", "session", "tool_reason",
+    "issuer", "handoff", "activity"}`` — the handoff line describes what the turn was doing / which
+    tool it stopped on for a cheap resume — or None when no gateway answers / it predates the verb
+    (caller falls back to legacy stop paths)."""
+    params: dict[str, Any] = {"session": session, "reason": reason, "hard": hard}
+    if message:
+        params["message"] = message
+    return query_gateway_control(home, "interrupt-session", params=params, timeout=timeout)
+
+
+def steer_gateway_session(home: Path, session: str, message: str,
+                          *, timeout: float = 5.0) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to queue ``message`` as a mid-turn steer for ``session``'s
+    live turn (delivered after the current tool batch; no abort). Returns ``{"accepted", "session",
+    "children"}`` — ``accepted: false`` with ``reason: "no-running-turn"`` when nothing runs, so the
+    scheduler queues its own follow-up — or None when no gateway answers / it predates the verb."""
+    return query_gateway_control(home, "steer-session",
+                                 params={"session": session, "message": message}, timeout=timeout)

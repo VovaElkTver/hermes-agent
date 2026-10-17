@@ -275,6 +275,107 @@ def finish_step(conn, step_id: str, status: str = "done") -> None:
     conn.commit()
 
 
+# ---- step preemption (PR-A: paused/resume for ctl steps) --------------------
+#
+# A running worker marks its step 'in_progress'; an out-of-band preempt (scheduler via
+# control socket) flips in_progress -> paused WITHOUT letting the turn finish, storing the
+# handoff note ("чем занимался, на какой тулзе встал") in a step_paused event so the next
+# dispatch resumes cheaply instead of re-narrating. resume_step puts it back to pending —
+# queue.next_step picks only 'pending', so paused steps are invisible to dispatch until
+# resumed. Each flip is a compare-and-set under BEGIN IMMEDIATE with a post-write
+# read-back: the preempt never trusts the worker's exit status for what the step's real
+# state became underneath it.
+
+STEP_STATUSES = frozenset({"pending", "in_progress", "paused", "done", "blocked", "failed"})
+
+
+def get_step(conn, step_id: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM ctl_step WHERE step_id=?", (step_id,)).fetchone()
+
+
+def _set_step_status_cas(conn, step_id: str, *, expect: str, new: str,
+                         task_id: str | None = None, note: str = "",
+                         event_kind: str | None = None) -> dict:
+    assert new in STEP_STATUSES, new
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute("SELECT status, task_id FROM ctl_step WHERE step_id=?",
+                           (step_id,)).fetchone()
+        if row is None:
+            conn.execute("ROLLBACK")
+            return {"ok": False, "step_id": step_id, "stored": None,
+                    "error": f"unknown step {step_id!r}"}
+        stored = row["status"]
+        if stored != expect:
+            conn.execute("ROLLBACK")
+            return {"ok": False, "step_id": step_id, "stored": stored, "expected": expect}
+        conn.execute("UPDATE ctl_step SET status=? WHERE step_id=?", (new, step_id))
+        if note and event_kind:
+            conn.execute(
+                "INSERT INTO ctl_event VALUES (?,?,?,?,?,?,?)",
+                (new_id("evt"), time.time(), event_kind,
+                 task_id or row["task_id"], "controller",
+                 json.dumps({"step_id": step_id, "handoff": note}, ensure_ascii=False),
+                 None))
+        actual = conn.execute("SELECT status FROM ctl_step WHERE step_id=?",
+                              (step_id,)).fetchone()
+        if actual is None or actual["status"] != new:
+            conn.execute("ROLLBACK")
+            return {"ok": False, "step_id": step_id,
+                    "stored": actual["status"] if actual else None,
+                    "error": "read-back mismatch after CAS"}
+        conn.commit()
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+    return {"ok": True, "step_id": step_id, "stored": new, "previous": stored,
+            "task_id": row["task_id"]}
+
+
+def mark_step_in_progress(conn, step_id: str) -> dict:
+    """Worker-side dispatch claim: pending -> in_progress (CAS)."""
+    return _set_step_status_cas(conn, step_id, expect="pending", new="in_progress")
+
+
+def pause_step(conn, step_id: str, *, note: str = "", task_id: str | None = None) -> dict:
+    """Out-of-band preempt: in_progress -> paused + handoff note (CAS). A step already
+    paused externally (or finished) reports ok:false with the stored status — the
+    scheduler acts on the READ-BACK state, never on the worker's exit status."""
+    return _set_step_status_cas(conn, step_id, expect="in_progress", new="paused",
+                                task_id=task_id, note=note, event_kind="step_paused")
+
+
+def resume_step(conn, step_id: str) -> dict:
+    """Return a paused step to dispatch: paused -> pending (CAS). Re-anchoring (fresh
+    contract text + the stored handoff note) happens at the next dispatch, see
+    loop.run_cycle / paused_handoff_note."""
+    return _set_step_status_cas(conn, step_id, expect="paused", new="pending")
+
+
+def unstick_step(conn, step_id: str) -> dict:
+    """Worker ended normally (fail/revise path) — release an in_progress claim back to
+    pending so the step stays dispatchable (CAS)."""
+    return _set_step_status_cas(conn, step_id, expect="in_progress", new="pending")
+
+
+def paused_handoff_note(conn, step_id: str) -> str:
+    """The newest step_paused handoff for a step ('' when none) — the cheap-resume text
+    the re-anchored worker receives instead of re-narrating its interrupted turn."""
+    row = conn.execute(
+        "SELECT payload FROM ctl_event WHERE kind='step_paused'"
+        " AND json_extract(payload,'$.step_id')=? ORDER BY ts DESC LIMIT 1",
+        (step_id,)).fetchone()
+    if row is None:
+        return ""
+    try:
+        return str(json.loads(row["payload"]).get("handoff") or "")
+    except (ValueError, TypeError):
+        return ""
+
+
 def add_artifact(conn, task_id: str, run_id: str, kind: str, payload: dict) -> str:
     aid = new_id("art")
     conn.execute("INSERT INTO ctl_artifact_revision VALUES (?,?,?,?,?,?)",

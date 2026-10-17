@@ -23,6 +23,46 @@ def _artifact_hash(payloads: list) -> str:
                                      ensure_ascii=False).encode()).hexdigest()
 
 
+def _park_task_paused(conn, task_id: str, *, basis: str) -> None:
+    try:
+        transitions.transition(conn, task_id, "paused", basis=basis)
+    except ValueError:
+        pass  # already paused/closed under another writer — the step state is the truth
+
+
+def _resolve_worker_outcome(conn, *, task: dict, step: dict, run_id: str, res: dict):
+    """Classify a finished worker against the DB, right after the turn ended.
+
+    Preemption truth is the step READ-BACK, never the worker's exit status: a turn cut
+    short can still report "finished" (or die reporting "failed") while the scheduler
+    already flipped the step to paused underneath it. Returns ``None`` to proceed to
+    artifact/review on a clean finish, else ``{"entry": <log line>, "stop": bool}``.
+    """
+    sid, tid = step["step_id"], task["task_id"]
+    cur = model.get_step(conn, sid)
+    if cur is not None and cur["status"] == "paused":
+        model.set_run_status(conn, run_id, "interrupted")
+        _park_task_paused(conn, tid, basis="out-of-band preempt")
+        return {"entry": {"task": tid, "run": run_id, "step": sid,
+                          "to": "paused", "preempted": True}, "stop": True}
+    status = res.get("status", "failed")
+    model.set_run_status(conn, run_id, "finished" if status == "finished" else status)
+    if status == "interrupted":
+        # Worker cut short with no external pause recorded: park the step paused with
+        # the worker's own handoff so a resume re-anchors instead of restarting blind.
+        model.pause_step(conn, sid, task_id=tid,
+                         note=str(res.get("handoff") or res.get("error")
+                                  or "worker reported interrupted"))
+        _park_task_paused(conn, tid, basis="worker interrupted (resume pending)")
+        return {"entry": {"task": tid, "run": run_id, "step": sid,
+                          "to": "paused", "interrupted": True}, "stop": True}
+    if status != "finished":
+        model.unstick_step(conn, sid)  # release the claim: a ready->running retry must find it dispatchable
+        transitions.transition(conn, tid, "failed", basis=f"run {run_id} {status}")
+        return {"entry": {"task": tid, "run": run_id, "to": "failed"}, "stop": False}
+    return None
+
+
 def run_cycle(conn, *, scope: str, worker_fn, review_fn, max_steps: int = 50) -> list[dict]:
     log = []
     for _ in range(max_steps):
@@ -61,6 +101,15 @@ def run_cycle(conn, *, scope: str, worker_fn, review_fn, max_steps: int = 50) ->
                 log.append({"task": task["task_id"], "to": "blocked",
                             "reason": "empty plan"})
                 continue
+            # A preempted (paused) step is NOT "all done": the task parks until the step is
+            # resumed, instead of marching into verifying with unfinished work.
+            if conn.execute("SELECT 1 FROM ctl_step WHERE task_id=? AND status='paused' LIMIT 1",
+                            (task["task_id"],)).fetchone() is not None:
+                transitions.transition(conn, task["task_id"], "paused",
+                                       basis="preempted step awaiting resume")
+                log.append({"task": task["task_id"], "to": "paused",
+                            "reason": "preempted step"})
+                return log
             transitions.transition(conn, task["task_id"], "verifying",
                                    basis="all steps done")
             outcome = finish_verifying(conn, task["task_id"])
@@ -80,18 +129,30 @@ def run_cycle(conn, *, scope: str, worker_fn, review_fn, max_steps: int = 50) ->
                                  worker_id="loop")
         model.add_budget(conn, task["task_id"], "tool_calls", 0)  # ensure counter row
         model.set_run_status(conn, run_id, "running")
+        # Claim the step BEFORE dispatch so an out-of-band preempt has something to
+        # CAS against (in_progress -> paused) while the worker is mid-turn. A lost claim
+        # (already in_progress/paused under another writer) is requeued and rescanned.
+        claim = model.mark_step_in_progress(conn, step["step_id"])
+        if not claim["ok"]:
+            model.set_run_status(conn, run_id, "interrupted")
+            log.append({"task": task["task_id"], "run": run_id,
+                        "skip_step": step["step_id"], "stored": claim["stored"]})
+            continue
+        # Re-anchoring: a step that resumes after a preempt gets the stored handoff
+        # ("чем занимался, на какой тулзе встал") — a cheap resume, no re-narration.
+        handoff = model.paused_handoff_note(conn, step["step_id"])
+        step = {**dict(step), "handoff": handoff} if handoff else dict(step)
         try:
             res = worker_fn({"run_id": run_id}, dict(task), step)
         except Exception as exc:
             res = {"status": "failed", "artifacts": [], "error": str(exc)}
         # budget consumed by children is accounted via post_tool_call hook; loop adds its step
         model.add_budget(conn, task["task_id"], "steps", 1)
-        status = res.get("status", "failed")
-        model.set_run_status(conn, run_id, "finished" if status == "finished" else status)
-        if status != "finished":
-            transitions.transition(conn, task["task_id"], "failed",
-                                   basis=f"run {run_id} {status}")
-            log.append({"task": task["task_id"], "run": run_id, "to": "failed"})
+        stop = _resolve_worker_outcome(conn, task=task, step=step, run_id=run_id, res=res)
+        if stop is not None:
+            log.append(stop["entry"])
+            if stop["stop"]:
+                return log
             continue
         ah = _artifact_hash(res.get("artifacts", []))
         model.add_artifact(conn, task["task_id"], run_id, "step_output",
@@ -107,8 +168,9 @@ def run_cycle(conn, *, scope: str, worker_fn, review_fn, max_steps: int = 50) ->
             log.append({"task": task["task_id"], "run": run_id,
                         "step": step["step_id"], "review": "pass"})
             continue
-        # checkpoint failed -> step stays pending; task needs a fix iteration
+        # checkpoint failed -> step goes back to pending; task needs a fix iteration
         log.append({"task": task["task_id"], "run": run_id, "review": verdict})
+        model.unstick_step(conn, step["step_id"])
         if verdict.get("verdict") == "needs_human":
             transitions.transition(conn, task["task_id"], "needs_human",
                                    basis=f"review: {verdict.get('detail')}")

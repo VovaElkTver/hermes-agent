@@ -50,6 +50,29 @@ controller.model / controller.transitions — одна authoritative точка:
 очередь можно всегда). Попутно найден мёртвый путь: `_default_scope` был не определён —
 любой автономный вызов падал в fail-closed; теперь scope-фолбэк = cwd процесса.
 
+## Преэмптивное переключение шага (PR-A)
+Детали и аудит механизма: `docs/design/preemptive-session-control.md`.
+- Control-socket verbs `interrupt-session` {session, reason, message, hard} и
+  `steer-session` {session, message} (`gateway/run_session_verbs.py`): шедулер из чужого
+  процесса снимает/перенаправляет живой тёрн без чат-платформы. `reason` — системная
+  категория (по умолчанию `controller_preemption`, слаг через `tool_reason`, #112647):
+  атрибуция тёрна говорит «scheduler preempted», НЕ user-stop. Клиенты
+  `interrupt_gateway_session` / `steer_gateway_session` возвращают None на старом
+  гейтвее без verbs → вызывающий идёт легаси-путём.
+- `ctl_step`: жизненный цикл pending→in_progress→(paused|done) — CAS в
+  `controller/model.py` (BEGIN IMMEDIATE + read-back; `mark_step_in_progress`,
+  `pause_step`, `resume_step`, `unstick_step`). Pump объявляет шаг in_progress до
+  диспатча; после воркера решение берётся из READ-BACK статуса шага, а не из
+  слов воркера. paused-шаг невидим диспатчу и паркует задачу в paused вместо
+  ложного verifying.
+- Handoff-заметка «чем занимался, на какой тулзе встал» пишется при снятии тёрна
+  (ctl_event `step_paused` у шага; sidecar-note у сессии) и подмешивается в шаг при
+  возобновляющем диспатче — дешёвый resume с ре-анкерингом по текущему контракту.
+- PR-B: `controller/preempt.py::request_preempt` — один вызов шедулера: gateway-verb
+  при живом гейтвее, иначе durable fallback (флаг `interrupt_requested` на run);
+  воркер-сабпроцесс режется `_kill_tree` на следующем полле `workers._await_worker`,
+  не доигрывая тёрн; brief возобновлённого шага получает блок `## RESUME`.
+
 ## Отключение
 Снять флаг + убрать controller из plugins.enabled. Ничто кроме controller/ не читает ctl_*;
 таблицы можно удалить вручную (DROP TABLE ctl_*), данные sessions/triggers не затронуты.
