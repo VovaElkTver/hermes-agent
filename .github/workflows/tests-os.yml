@@ -12,7 +12,7 @@ name: OS-specific tests
 # is where those markers actually execute:
 #
 #   macos    → ``-m platforms``    on macos-latest
-#   windows  → ``-m platforms``    on windows-latest and windows-11-arm
+#   windows  → ``-m platforms``    on the self-hosted elk Windows box + windows-11-arm
 #
 # (tests/conftest.py's ``pytest_collection_modifyitems`` hook skips
 # foreign-OS ``platforms(...)`` markers on each host, so one shared ``-m
@@ -89,7 +89,10 @@ jobs:
             marker: macos
             slice: 2/2
           - name: Windows-only tests
-            runner: windows-latest
+            # self-hosted elk Windows box (hermes-win): hosted windows-latest
+            # lane is chronically flaky on this fork (17+ live-test failures
+            # since 3a34e7059a, unrelated to PR diffs). Real machine, stable env.
+            runner: [self-hosted, windows, hermes-win]
             marker: windows
           - name: Windows-only tests (arm64)
             runner: windows-11-arm
